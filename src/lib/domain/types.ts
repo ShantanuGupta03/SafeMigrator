@@ -190,7 +190,9 @@ export type ActionStatus =
   | "skipped"
   | "rejected"
   | "failed"
-  | "needs_attention";
+  | "needs_attention"
+  /** May or may not have been broadcast. Never retried automatically; see `MigrationAction.uncertainty`. */
+  | "uncertain";
 
 export interface ActionError {
   code:
@@ -206,9 +208,34 @@ export interface ActionError {
     | "batch_failed"
     | "dropped"
     | "blocked"
+    /** The wallet or node refused before broadcasting (definitive). */
+    | "not_submitted"
+    /** Submission outcome unknown (timeout, lost response, closed session). */
+    | "submission_unknown"
+    /** The transaction's nonce was consumed by something else; it can no longer land. */
+    | "not_landed"
+    /** The amount to move differs materially from what the user reviewed. */
+    | "amount_changed"
     | "unknown";
   message: string;
 }
+
+/** Evidence gathered while an action's submission outcome is unknown. */
+export interface Uncertainty {
+  reason: string;
+  /** Source nonce the wallet was expected to use when it was prompted. */
+  nonce: number | null;
+  latestNonce: number | null;
+  pendingNonce: number | null;
+  checkedAt: number;
+  /** Only true when no broadcast could be detected; the user may then confirm nothing was sent. */
+  userMayConfirmNotSent: boolean;
+  /** A transaction that looks related but could not be proven to be this action. */
+  candidateTxHash: Hex | null;
+}
+
+/** How a transfer's outcome was established, strongest first. */
+export type VerificationEvidence = "receipt_logs" | "log_search" | "balance_only" | "end_state";
 
 export interface ActionVerification {
   /** Expected amount delivered to the Safe (base units). */
@@ -219,6 +246,9 @@ export interface ActionVerification {
   sourceRemaining: BigIntString | null;
   note: string | null;
   blockNumber: BigIntString | null;
+  /** Amount the Safe received according to this action's own transfer events. */
+  loggedAmount?: BigIntString | null;
+  evidence?: VerificationEvidence | null;
 }
 
 export interface MigrationAction {
@@ -248,6 +278,14 @@ export interface MigrationAction {
   verification: ActionVerification | null;
   error: ActionError | null;
   attempts: number;
+  /** Token IDs and amounts the user reviewed; larger deviations need renewed confirmation. */
+  previewTokenIds?: BigIntString[];
+  previewAmounts?: BigIntString[];
+  /** Latest block when the wallet was prompted; lower bound for searching this action's events. */
+  promptBlock?: BigIntString | null;
+  /** Block at which `safeBalancesBefore` was read. */
+  snapshotBlock?: BigIntString | null;
+  uncertainty?: Uncertainty | null;
 }
 
 export type ChainPhase =
@@ -268,6 +306,8 @@ export type ExecutionStrategy = "atomic_batch" | "sequential";
 
 export interface BatchRecord {
   callsId: string;
+  /** "requested": recorded before wallet_sendCalls returned, under the id the app proposed. */
+  state?: "requested" | "submitted";
   actionIds: string[];
   submittedAt: number;
   statusCode: number | null;
@@ -296,11 +336,57 @@ export interface Migration {
   source: Address;
   environment: Environment;
   safeConfig: SafeConfig;
-  /** Owners that proved control with a fresh EIP-712 signature bound to this configuration. */
+  /**
+   * Owners whose proof validated when the migration was created. Informational only: execution
+   * re-validates `ownerProofs` cryptographically and never trusts this list.
+   */
   verifiedOwners: Address[];
+  ownerProofs?: OwnerProof[];
+  /** Testnet-only: the user chose to run without the recommended owner verification. */
+  ownerVerificationWaived?: boolean;
+  /** What the user selected versus what this migration can execute. Absent on older records. */
+  scope?: MigrationScope | null;
   chains: ChainMigration[];
   runState: "idle" | "running" | "paused" | "finished";
   log: MigrationLogEntry[];
+}
+
+export interface OwnerProof {
+  owner: Address;
+  verification: OwnerVerification;
+}
+
+export interface ScopeAsset {
+  assetId: string;
+  chainId: number;
+  label: string;
+  amount: BigIntString;
+  decimals: number;
+  /** Why it is not part of the executable plan (null when included). */
+  reason: string | null;
+}
+
+export interface ScopeChain {
+  chainId: number;
+  reasons: string[];
+  assetIds: string[];
+}
+
+export interface MigrationScope {
+  /** Networks the user had selected when the migration was created. */
+  selectedChainIds: number[];
+  /** Every asset in the effective selection (selected network + selected + still discovered). */
+  selectedAssets: ScopeAsset[];
+  includedChainIds: number[];
+  /** Selected networks that could not run, with the blockers shown at review time. */
+  blockedChains: ScopeChain[];
+  /** Selected assets that will not move (blocked network or failed simulation), with reasons. */
+  excludedAssets: ScopeAsset[];
+  /** The user explicitly accepted that only part of the selection will migrate. */
+  partialAcknowledged: boolean;
+  /** Networks whose discovery was partial or failed when the plan was made. */
+  incompleteDiscovery: { chainId: number; note: string }[];
+  plannedAt: number;
 }
 
 export interface MigrationLogEntry {

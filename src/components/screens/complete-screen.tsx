@@ -12,7 +12,7 @@ import { formatAmount, formatFee, sumBigInt, toBigInt } from "@/lib/domain/amoun
 import type { ChainMigration, Migration, NetworkDiscovery, SafeInspection } from "@/lib/domain/types";
 import { discoverNetwork, fetchIndexerViaApi, type ManualImport } from "@/lib/services/discovery/asset-discovery";
 import { compareSafeToConfig, inspectSafe } from "@/lib/services/onchain-verification";
-import { chainOutcome, hasInFlightActions, SUCCESS_STATUSES } from "@/lib/state/machine";
+import { chainOutcome, hasInFlightActions, migrationOutcome, SUCCESS_STATUSES } from "@/lib/state/machine";
 import { useAppState } from "../app-state";
 import { AddressChip, ChainLabel, ScreenHeading, TxLink } from "../shared";
 
@@ -91,6 +91,17 @@ export function CompleteScreen() {
 
   const allCompleted = migration.chains.every((c) => chainOutcome(c) === "completed");
   const inFlight = hasInFlightActions(migration);
+  const summary = migrationOutcome(migration);
+  const scopeTitle =
+    summary.outcome === "complete"
+      ? "Selected assets migrated"
+      : summary.outcome === "partial"
+        ? "Partial migration completed"
+        : summary.outcome === "uncertain"
+          ? "Migration needs reconciliation"
+          : allCompleted
+            ? "Executed networks finished"
+            : "Migration summary";
 
   const exportReceipt = () => {
     const receipt = {
@@ -99,6 +110,8 @@ export function CompleteScreen() {
       source: migration.source,
       safeConfig: migration.safeConfig,
       verifiedOwners: migration.verifiedOwners,
+      scope: migration.scope ?? null,
+      migrationOutcome: summary.outcome,
       chains: migration.chains.map((c) => ({
         chainId: c.chainId,
         network: getChain(c.chainId).name,
@@ -145,13 +158,26 @@ export function CompleteScreen() {
   return (
     <div className="space-y-8">
       <ScreenHeading
-        title={allCompleted ? "Your assets have a safer home." : "Migration summary"}
+        title={summary.outcome === "complete" && allCompleted ? "Your assets have a safer home." : scopeTitle}
         subtitle={
-          allCompleted
-            ? "Every selected asset was transferred and verified onchain. Results below are re-read live from each network."
-            : "Some networks are not finished. Completed steps are verified onchain; remaining items are listed below."
+          summary.outcome === "complete" && allCompleted
+            ? "Every asset in your selection was transferred and verified onchain. This is not full wallet retirement — check residual balances below."
+            : summary.outcome === "partial"
+              ? `${summary.blockedChains} network(s) or ${summary.excludedAssets} asset(s) from your original selection did not migrate. Executed networks are verified below.`
+              : summary.outcome === "uncertain"
+                ? "At least one step has an unknown submission outcome. Reconcile before retrying any action."
+                : "Some networks are not finished. Completed steps are verified onchain; remaining items are listed below."
         }
       />
+      {migration.scope && (migration.scope.blockedChains.length > 0 || migration.scope.excludedAssets.length > 0) && (
+        <Alert variant="info" title="Original selection vs what ran">
+          <p className="text-sm">
+            You selected {migration.scope.selectedAssets.length} asset(s) across {migration.scope.selectedChainIds.length} network(s). This run included{" "}
+            {migration.scope.includedChainIds.length} network(s).
+            {migration.scope.blockedChains.length > 0 && ` Blocked: ${migration.scope.blockedChains.map((b) => getChain(b.chainId).name).join(", ")}.`}
+          </p>
+        </Alert>
+      )}
 
       {!allCompleted && (
         <Alert variant="warning" title="Incomplete migration">

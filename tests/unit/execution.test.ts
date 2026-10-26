@@ -57,6 +57,10 @@ vi.mock("@/lib/services/safe-deployment", async (importOriginal) => ({
   deploymentTargetAddress: vi.fn(async () => world.deployTarget ?? SAFE),
 }));
 
+vi.mock("@/lib/services/owner-readiness", () => ({
+  validateMigrationOwnerProofs: vi.fn(async () => ({ ok: true, proofs: [], verifiedOwners: [], issues: [], waived: true })),
+}));
+
 vi.mock("@/lib/services/gas-estimation", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/services/gas-estimation")>()),
   getFeeQuote: vi.fn(async () => ({ maxFeePerGas: 10n, maxPriorityFeePerGas: 1n, currentGasPrice: 5n, eip1559: true })),
@@ -353,18 +357,18 @@ describe("resume after interruption", () => {
     const after = h.state.chains[0]!.actions.find((a) => a.kind === "transfer_erc20")!;
     expect(after.status).toBe("needs_attention");
     expect(after.error?.code).toBe("dropped");
-    expect(isSafelyRetryable(after)).toBe(true);
+    expect(isSafelyRetryable(after)).toBe(false);
     expect(h.sent.filter((id) => id === erc20.id)).toEqual([]);
   });
 
-  it("returns an abandoned wallet prompt to planned and sends it once", async () => {
+  it("marks an abandoned wallet prompt uncertain until reconciled", async () => {
     world.deployed.add(SEPOLIA);
     const h = harness(migrationFor([plan(SEPOLIA, "sequential", true)]));
     const erc20 = h.state.chains[0]!.actions.find((a) => a.kind === "transfer_erc20")!;
     h.deps.dispatch({ type: "ACTION_PATCH", chainId: SEPOLIA, actionId: erc20.id, patch: { status: "awaiting_wallet" } });
     await runMigration(h.deps);
-    expect(h.sent.filter((id) => id === erc20.id)).toHaveLength(1);
-    expect(statuses(h.state).transfer_erc20).toBe("verified");
+    expect(h.sent.filter((id) => id === erc20.id)).toHaveLength(0);
+    expect(statuses(h.state).transfer_erc20).toBe("uncertain");
   });
 });
 

@@ -3,6 +3,7 @@ import { getAddress, isAddress } from "viem";
 import { z } from "zod";
 import { findChain } from "@/lib/chains/registry";
 import { discoverWithConfiguredIndexer, sanitizeIndexerTokens } from "@/lib/server/indexers";
+import { checkRateLimit, clientKey } from "@/lib/server/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,10 @@ const query = z.object({
 });
 
 export async function GET(request: Request) {
+  const limit = checkRateLimit(`discovery:${clientKey(request)}`, 60, 60_000);
+  if (!limit.ok) {
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers: { "retry-after": String(limit.retryAfterSec) } });
+  }
   const url = new URL(request.url);
   const parsed = query.safeParse({ chainId: url.searchParams.get("chainId"), owner: url.searchParams.get("owner") });
   if (!parsed.success) return NextResponse.json({ error: "Invalid query" }, { status: 400 });

@@ -52,6 +52,45 @@ export function challengeTypedData(c: OwnerChallenge) {
 
 export type VerifyResult = { ok: true; verification: OwnerVerification } | { ok: false; reason: string };
 
+export const EXECUTION_PROOF_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Re-checks a stored proof at execution time (longer TTL, no one-time nonce gate). */
+export async function verifyStoredOwnerProof(params: {
+  challenge: OwnerChallenge;
+  signature: Hex;
+  client: PublicClient;
+  maxAgeMs?: number;
+  now?: number;
+}): Promise<VerifyResult> {
+  const now = params.now ?? Date.now();
+  const maxAge = params.maxAgeMs ?? EXECUTION_PROOF_MAX_AGE_MS;
+  if (now - params.challenge.issuedAt > maxAge) return { ok: false, reason: "Owner verification expired. Verify control again." };
+  const clientChain = await params.client.getChainId();
+  if (clientChain !== params.challenge.chainId) return { ok: false, reason: "Verification chain mismatch." };
+  let valid = false;
+  try {
+    valid = await params.client.verifyTypedData({ address: params.challenge.owner, signature: params.signature, ...challengeTypedData(params.challenge) });
+  } catch (e) {
+    return { ok: false, reason: `Signature check failed: ${(e as Error).message.slice(0, 160)}` };
+  }
+  if (!valid) return { ok: false, reason: "Signature does not match this owner address." };
+  const code = await params.client.getCode({ address: params.challenge.owner }).catch(() => undefined);
+  const isContract = !!code && code !== "0x" && !code.toLowerCase().startsWith("0xef0100");
+  return {
+    ok: true,
+    verification: {
+      method: "eip712",
+      signature: params.signature,
+      nonce: params.challenge.nonce,
+      issuedAt: params.challenge.issuedAt,
+      configHash: params.challenge.configHash,
+      verifiedAt: now,
+      signerType: isContract ? "contract" : "eoa",
+      chainId: params.challenge.chainId,
+    },
+  };
+}
+
 export async function verifyChallengeSignature(params: {
   challenge: OwnerChallenge;
   signature: Hex;

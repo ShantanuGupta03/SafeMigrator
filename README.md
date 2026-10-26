@@ -129,7 +129,7 @@ The full walkthrough is in [docs/TESTNET_GUIDE.md](docs/TESTNET_GUIDE.md). In sh
 
 | Layer | How | Real or mocked |
 | --- | --- | --- |
-| Math, validation, classification, planning, state machine, deployment-calldata inspection, EIP-712 challenges | `npm test` (107 tests) | Pure logic. Signatures are real (viem accounts). |
+| Math, validation, classification, planning, state machine, deployment-calldata inspection, EIP-712 challenges | `npm test` (115 tests) | Pure logic. Signatures are real (viem accounts). |
 | Executor control flow (rejection, retry, resume, dropped transactions, deploy-in-batch, batch revert, batching fallback, gating) | `npm test` | Wallet and chain **mocked** |
 | EIP-5792 capability and status parsing | `npm test` | Wallet responses **mocked** |
 | Canonical contracts, version negotiation, same address on Sepolia, Chiado and Base Sepolia | `npm run test:network` | **Live** testnet reads |
@@ -160,6 +160,8 @@ an atomic batch through a real wallet's EIP-5792 implementation.
 * [docs/SECURITY.md](docs/SECURITY.md): security model, assumptions, limitations and the mainnet checklist
 * [docs/TESTNET_GUIDE.md](docs/TESTNET_GUIDE.md): faucets, sample assets and demo scenarios
 * [docs/MILESTONES.md](docs/MILESTONES.md): milestone status
+* [docs/POC_REVIEW.md](docs/POC_REVIEW.md): PoC hardening findings and fix status
+* [docs/POC_VALIDATION.md](docs/POC_VALIDATION.md): manual real-wallet validation checklist
 
 ## Design system
 

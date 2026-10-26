@@ -6,6 +6,7 @@ import { getPublicClient } from "@/lib/chains/clients";
 import { chainsForEnvironment } from "@/lib/chains/registry";
 import type { Environment, Migration, NetworkDiscovery, SignerSlot } from "@/lib/domain/types";
 import { discoverNetwork, fetchIndexerViaApi, type ManualImport } from "@/lib/services/discovery/asset-discovery";
+import { effectiveSelection, importsForChains, type EffectiveSelection } from "@/lib/services/selection";
 import { DEFAULT_THRESHOLD } from "@/lib/services/signer-configuration";
 import { chainOutcome, hasInFlightActions, migrationReducer, type MigrationEvent } from "@/lib/state/machine";
 import { archiveMigration, draftKey, loadMigration, loadTestnetImports, saveMigration, clearMigration } from "@/lib/state/persistence";
@@ -70,6 +71,8 @@ interface AppStateValue {
   draft: Draft;
   setDraft(fn: (d: Draft) => Draft): void;
   discovery: Record<number, NetworkDiscovery>;
+  /** The only assets and networks that may be planned or executed. */
+  selection: EffectiveSelection;
   scanning: Record<number, boolean>;
   scan(chainIds?: number[], manualImports?: ManualImport[]): Promise<void>;
   migration: Migration | null;
@@ -161,8 +164,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const scan = useCallback(
     async (chainIds?: number[], manualImports?: ManualImport[]) => {
       if (!source) return;
-      const ids = chainIds ?? draftRef.current.selectedChains;
-      const imports = manualImports ?? draftRef.current.manualImports;
+      const env = new Set(chainsForEnvironment(draftRef.current.environment).map((c) => c.id));
+      const ids = (chainIds ?? draftRef.current.selectedChains).filter((id) => env.has(id));
+      const imports = importsForChains(manualImports ?? draftRef.current.manualImports, ids);
       setScanning((s) => ({ ...s, ...Object.fromEntries(ids.map((id) => [id, true])) }));
       await Promise.all(
         ids.map(async (chainId) => {
@@ -198,6 +202,18 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, [setDraft]);
 
+  const selection = useMemo(
+    () =>
+      effectiveSelection({
+        envChainIds: chainsForEnvironment(draft.environment).map((c) => c.id),
+        selectedChains: draft.selectedChains,
+        selectedAssetIds: draft.selectedAssetIds,
+        acknowledgedSuspicious: draft.acknowledgedSuspicious,
+        discovery,
+      }),
+    [draft.environment, draft.selectedChains, draft.selectedAssetIds, draft.acknowledgedSuspicious, discovery],
+  );
+
   const value = useMemo<AppStateValue>(
     () => ({
       source,
@@ -207,6 +223,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       draft,
       setDraft,
       discovery,
+      selection,
       scanning,
       scan,
       migration,
@@ -215,7 +232,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       discardMigration,
       startNewMigration,
     }),
-    [source, pinSource, step, draft, setDraft, discovery, scanning, scan, migration, dispatch, getMigration, discardMigration, startNewMigration],
+    [source, pinSource, step, draft, setDraft, discovery, selection, scanning, scan, migration, dispatch, getMigration, discardMigration, startNewMigration],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

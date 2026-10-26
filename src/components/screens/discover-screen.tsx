@@ -14,6 +14,7 @@ import { coverageStatement } from "@/lib/services/discovery/asset-discovery";
 import { isAutoSelectable, isManuallySelectable, isPreselectable } from "@/lib/services/discovery/classification";
 import { parseAddressInput } from "@/lib/services/signer-configuration";
 import { cn } from "@/lib/utils";
+import { withoutChain, withoutChains } from "@/lib/services/selection";
 import { isFullyCompleted, useAppState } from "../app-state";
 import { AddressChip, ChainIcon, ScreenHeading } from "../shared";
 
@@ -55,7 +56,7 @@ const COVERAGE_LABEL: Record<CoverageLevel, string> = {
 };
 
 export function DiscoverScreen() {
-  const { draft, setDraft, discovery, scanning, scan, setStep, source, migration } = useAppState();
+  const { draft, setDraft, discovery, selection, scanning, scan, setStep, source, migration } = useAppState();
   const chains = chainsForEnvironment(draft.environment);
   const autoSelected = useRef(new Set<number>());
 
@@ -65,31 +66,41 @@ export function DiscoverScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.selectedChains, source]);
 
-  // First result per chain: pre-select only transferable assets with a trust signal.
+  // First result per selected chain: pre-select only transferable assets with a trust signal.
   useEffect(() => {
     for (const [id, d] of Object.entries(discovery)) {
       const chainId = Number(id);
-      if (autoSelected.current.has(chainId)) continue;
+      if (!draft.selectedChains.includes(chainId) || autoSelected.current.has(chainId)) continue;
       autoSelected.current.add(chainId);
       const ids = d.assets.filter(isPreselectable).map((a) => a.id);
       if (ids.length && !draft.selectedAssetIds.some((x) => x.startsWith(`${chainId}:`))) {
         setDraft((dr) => ({ ...dr, selectedAssetIds: [...new Set([...dr.selectedAssetIds, ...ids])] }));
       }
     }
-  }, [discovery, draft.selectedAssetIds, setDraft]);
+  }, [discovery, draft.selectedAssetIds, draft.selectedChains, setDraft]);
 
   const networks = draft.selectedChains.map((id) => discovery[id]).filter(Boolean) as NetworkDiscovery[];
   const allAssets = networks.flatMap((n) => n.assets);
-  const selected = new Set(draft.selectedAssetIds);
-  const selectedAssets = allAssets.filter((a) => selected.has(a.id));
+  const selected = new Set(selection.assetIds);
+  const selectedAssets = selection.assets;
   const anyScanning = draft.selectedChains.some((id) => scanning[id]);
   const totalUsd = selectedAssets.reduce((s, a) => s + (a.usdValue ?? 0), 0);
 
-  const toggleChain = (id: number) =>
-    setDraft((d) => ({
-      ...d,
-      selectedChains: d.selectedChains.includes(id) ? d.selectedChains.filter((x) => x !== id) : [...d.selectedChains, id],
-    }));
+  // Deselecting a network drops its asset selections; re-enabling it starts from a fresh pre-selection.
+  const toggleChain = (id: number) => {
+    const on = draft.selectedChains.includes(id);
+    autoSelected.current.delete(id);
+    setDraft((d) =>
+      on
+        ? {
+            ...d,
+            selectedChains: d.selectedChains.filter((x) => x !== id),
+            selectedAssetIds: withoutChain(d.selectedAssetIds, id),
+            acknowledgedSuspicious: withoutChain(d.acknowledgedSuspicious, id),
+          }
+        : { ...d, selectedChains: [...d.selectedChains, id] },
+    );
+  };
 
   const toggleAsset = (a: DiscoveredAsset) =>
     setDraft((d) => ({
@@ -103,7 +114,7 @@ export function DiscoverScreen() {
       selectedAssetIds: [...new Set([...d.selectedAssetIds, ...allAssets.filter((a) => isAutoSelectable(a.classification)).map((a) => a.id)])],
     }));
 
-  const clearAll = () => setDraft((d) => ({ ...d, selectedAssetIds: [] }));
+  const clearAll = () => setDraft((d) => ({ ...d, selectedAssetIds: withoutChains(d.selectedAssetIds, d.selectedChains) }));
 
   return (
     <div className="space-y-8">
@@ -368,14 +379,16 @@ function AssetRow({
 
 function ManualImportCard() {
   const { draft, setDraft, scan } = useAppState();
-  const chains = chainsForEnvironment(draft.environment);
-  const [chainId, setChainId] = useState<number>(chains[0]!.id);
+  const chains = chainsForEnvironment(draft.environment).filter((c) => draft.selectedChains.includes(c.id));
+  const [picked, setChainId] = useState<number | null>(null);
+  const chainId = picked !== null && chains.some((c) => c.id === picked) ? picked : (chains[0]?.id ?? null);
   const [standard, setStandard] = useState<"erc20" | "erc721" | "erc1155">("erc20");
   const [contract, setContract] = useState("");
   const [tokenId, setTokenId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const submit = () => {
+    if (chainId === null) return setError("Select a network above first.");
     const address = parseAddressInput(contract);
     if (!address) return setError("Enter a valid contract address.");
     if (standard !== "erc20" && !/^\d+$/.test(tokenId.trim())) return setError("Token ID must be a non-negative integer.");
@@ -387,11 +400,7 @@ function ManualImportCard() {
       ),
       entry,
     ];
-    setDraft((d) => ({
-      ...d,
-      selectedChains: d.selectedChains.includes(chainId) ? d.selectedChains : [...d.selectedChains, chainId],
-      manualImports: imports,
-    }));
+    setDraft((d) => ({ ...d, manualImports: imports }));
     setContract("");
     setTokenId("");
     void scan([chainId], imports);
@@ -401,11 +410,13 @@ function ManualImportCard() {
     <Card>
       <CardHeader>
         <p className="font-medium">Missing something? Import a token or NFT</p>
-        <p className="text-sm text-muted-foreground">Indexers cannot see every asset. Imports are verified onchain before they appear above.</p>
+        <p className="text-sm text-muted-foreground">
+          Indexers cannot see every asset. Imports are verified onchain before they appear above, and only count on networks you have selected.
+        </p>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid gap-2 sm:grid-cols-[auto_auto_1fr_auto_auto]">
-          <Select value={chainId} onChange={(e) => setChainId(Number(e.target.value))} aria-label="Network">
+          <Select value={chainId ?? ""} onChange={(e) => setChainId(Number(e.target.value))} aria-label="Network" disabled={chains.length === 0}>
             {chains.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}

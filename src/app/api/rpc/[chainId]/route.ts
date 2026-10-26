@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { findChain } from "@/lib/chains/registry";
 import { validateRpcPayload } from "@/lib/chains/rpc-policy";
+import { checkRateLimit, clientKey } from "@/lib/server/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -11,9 +12,17 @@ function upstreamUrls(chainId: number): string[] {
   return configured ? [configured, ...chain.publicRpcUrls] : [...chain.publicRpcUrls];
 }
 
+const MAX_BODY_BYTES = 256_000;
+
 export async function POST(request: Request, ctx: { params: Promise<{ chainId: string }> }) {
   const { chainId: raw } = await ctx.params;
   const chainId = Number(raw);
+  const limit = checkRateLimit(`rpc:${clientKey(request)}:${chainId}`, 120, 60_000);
+  if (!limit.ok) {
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers: { "retry-after": String(limit.retryAfterSec) } });
+  }
+  const contentLength = Number(request.headers.get("content-length") ?? "0");
+  if (contentLength > MAX_BODY_BYTES) return NextResponse.json({ error: "Request too large" }, { status: 413 });
   const urls = upstreamUrls(chainId);
   if (!Number.isSafeInteger(chainId) || urls.length === 0) {
     return NextResponse.json({ error: "Unsupported chain" }, { status: 404 });

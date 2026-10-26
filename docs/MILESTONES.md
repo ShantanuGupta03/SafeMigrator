@@ -14,7 +14,7 @@ Status legend: ✅ implemented · 🧪 experimental (implemented, needs real-wor
 | Onchain verification of owners, threshold, singleton, modules, guard, fallback handler | ✅ (fork-verified) |
 | Native + ERC-20 transfers, post-transfer balance verification | ✅ (fork-verified, incl. fee-on-transfer discrepancy and restricted-token exclusion) |
 | Testnet sample tokens (deployable from the app) + faucet docs | ✅ |
-| Manual signed run on public Sepolia + Chiado with a browser wallet | ⏳ needs a funded user wallet — see `TESTNET_GUIDE.md` |
+| Manual signed run on public Sepolia + Chiado with a browser wallet | ⏳ user-reported Sepolia success; full dual-network evidence still required — see `docs/POC_VALIDATION.md` |
 
 ## Milestone B — Comprehensive transferable assets
 | Item | Status |

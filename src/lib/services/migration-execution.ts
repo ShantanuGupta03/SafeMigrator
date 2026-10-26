@@ -3,6 +3,7 @@ import { executionGate, getChain } from "@/lib/chains/registry";
 import type { ActionError, ChainMigration, ChainPhase, Migration, MigrationAction } from "@/lib/domain/types";
 import { chainOutcome, SUCCESS_STATUSES, type MigrationEvent } from "@/lib/state/machine";
 import {
+  amountsMateriallyChanged,
   buildTransferCall,
   pruneZeroErc1155,
   readSafeBalances,
@@ -10,6 +11,8 @@ import {
   simulateTransfer,
   verifyTransfer,
 } from "./asset-transfer";
+import { validateMigrationOwnerProofs } from "./owner-readiness";
+import { classifySubmissionError } from "./submission-errors";
 import { estimateCallGas, estimateL1DataFee, getFeeQuote, isDust, maxCost, spendableNative, type FeeQuote } from "./gas-estimation";
 import { compareSafeToConfig, inspectSafe } from "./onchain-verification";
 import { buildDeploymentTransaction, deploymentTargetAddress } from "./safe-deployment";
@@ -156,8 +159,31 @@ async function waitReceipt(deps: ExecutorDeps, chainId: number, actionId: string
   }
 }
 
-/** Throws HaltRun after recording a rejection; returns normally for other errors. */
-function handleSendError(deps: ExecutorDeps, chainId: number, actionIds: string[], e: unknown, what: string): never | void {
+async function markUncertain(deps: ExecutorDeps, chainId: number, actionIds: string[], reason: string) {
+  const client = deps.clientFor(chainId);
+  const source = deps.getMigration().source;
+  const latest = await client.getTransactionCount({ address: source, blockTag: "latest" });
+  const pending = await client.getTransactionCount({ address: source, blockTag: "pending" });
+  for (const id of actionIds) {
+    const a = actionOf(deps, chainId, id);
+    patch(deps, chainId, id, {
+      status: "uncertain",
+      error: fail("submission_unknown", reason),
+      uncertainty: {
+        reason,
+        nonce: a.txNonce,
+        latestNonce: latest,
+        pendingNonce: pending,
+        checkedAt: Date.now(),
+        userMayConfirmNotSent: pending <= latest,
+        candidateTxHash: a.txHash,
+      },
+    });
+  }
+}
+
+/** Throws HaltRun after recording a rejection or ambiguous submission; returns normally for definitive pre-broadcast errors. */
+async function handleSendError(deps: ExecutorDeps, chainId: number, actionIds: string[], e: unknown, what: string): Promise<never | void> {
   if (isUserRejection(e)) {
     for (const id of actionIds) patch(deps, chainId, id, { status: "rejected", error: fail("user_rejected", `${what} was rejected in your wallet. Nothing was sent.`) });
     phase(deps, chainId, "needs_attention", `${what} was rejected in your wallet. Nothing was sent. Use Retry when ready.`);
@@ -168,7 +194,38 @@ function handleSendError(deps: ExecutorDeps, chainId: number, actionIds: string[
     phase(deps, chainId, "needs_attention", e.message);
     throw new HaltRun(e.message);
   }
-  for (const id of actionIds) patch(deps, chainId, id, { status: "failed", error: fail("rpc_error", errorMessage(e)) });
+  const cls = classifySubmissionError(e);
+  const msg = errorMessage(e);
+  if (cls === "ambiguous") {
+    await markUncertain(deps, chainId, actionIds, `${what}: submission outcome unknown (${msg}). Resume to reconcile before retrying.`);
+    phase(deps, chainId, "needs_attention", `${what} may have been submitted. Resume to reconcile — do not retry until the outcome is known.`);
+    throw new HaltRun("ambiguous submission");
+  }
+  for (const id of actionIds) patch(deps, chainId, id, { status: "failed", error: fail("not_submitted", msg) });
+}
+
+async function reconcileAwaitingWallet(deps: ExecutorDeps, chainId: number, a: MigrationAction) {
+  const m = deps.getMigration();
+  const c = chainOf(deps, chainId);
+  const client = deps.clientFor(chainId);
+  const block = await client.getBlockNumber();
+  if (a.kind === "deploy_safe") {
+    const insp = await inspectSafe(client, c.safeAddress, block);
+    if (insp.hasCode) {
+      const issues = compareSafeToConfig(insp, m.safeConfig, c.contracts);
+      patch(deps, chainId, a.id, issues.length ? { status: "needs_attention", error: fail("verification_failed", issues.join(" ")) } : { status: "verified" });
+      deps.dispatch({ type: "CHAIN_PATCH", chainId, patch: { safeVerification: insp } });
+      return;
+    }
+  } else {
+    const outcome = await verifyTransfer(client, a, m.source, c.safeAddress, block);
+    if (outcome.status === "verified" || outcome.status === "verified_with_discrepancy") {
+      patch(deps, chainId, a.id, { status: outcome.status, verification: outcome.verification, error: null });
+      return;
+    }
+  }
+  await markUncertain(deps, chainId, [a.id], `${a.label}: wallet was open when the session ended; onchain outcome unknown.`);
+  log(deps, chainId, "warn", `${a.label}: previous wallet prompt needs reconciliation.`, { actionId: a.id });
 }
 
 /* ------------------------------ Reconciliation ----------------------------- */
@@ -182,12 +239,8 @@ export async function reconcileChain(deps: ExecutorDeps, chainId: number): Promi
   const m = deps.getMigration();
   const c = chainOf(deps, chainId);
 
-  for (const a of c.actions) {
-    if (a.status === "awaiting_wallet") {
-      // The wallet prompt belonged to a previous session; nothing was recorded as sent.
-      patch(deps, chainId, a.id, { status: "planned" });
-      log(deps, chainId, "warn", `${a.label}: previous wallet prompt was abandoned; re-checking onchain state.`, { actionId: a.id });
-    }
+  for (const a of [...c.actions]) {
+    if (a.status === "awaiting_wallet") await reconcileAwaitingWallet(deps, chainId, a);
   }
 
   // Batches
@@ -227,6 +280,14 @@ export async function reconcileChain(deps: ExecutorDeps, chainId: number): Promi
           throw e;
         }
       } else {
+        const latest = await client.getTransactionCount({ address: m.source, blockTag: "latest" });
+        if (a.txNonce !== null && latest > a.txNonce) {
+          patch(deps, chainId, a.id, {
+            status: "failed",
+            error: fail("not_landed", "This transaction's nonce was used by another transaction and will not land."),
+          });
+          continue;
+        }
         await reconcileByEndState(deps, chainId, a.id, m.source, c.safeAddress, "Transaction is no longer known to the network (dropped or replaced).");
         continue;
       }
@@ -290,7 +351,7 @@ async function settleReceipt(deps: ExecutorDeps, chainId: number, actionId: stri
     return;
   }
   phase(deps, chainId, "verifying_balances");
-  const outcome = await verifyTransfer(client, actionOf(deps, chainId, a.id), m.source, c.safeAddress, receipt.blockNumber);
+  const outcome = await verifyTransfer(client, actionOf(deps, chainId, a.id), m.source, c.safeAddress, receipt.blockNumber, receipt);
   patch(deps, chainId, a.id, {
     status: outcome.status,
     verification: outcome.verification,
@@ -467,7 +528,7 @@ async function runDeployment(deps: ExecutorDeps, chainId: number): Promise<boole
   try {
     hash = await deps.wallet.sendTransaction({ chainId, ...tx, gas, ...feeFields(fee) });
   } catch (e) {
-    handleSendError(deps, chainId, [deploy.id], e, "Safe deployment");
+    await handleSendError(deps, chainId, [deploy.id], e, "Safe deployment");
     phase(deps, chainId, "failed", `Deployment could not be sent: ${errorMessage(e)}`);
     return false;
   }
@@ -512,17 +573,39 @@ async function prepareTransfers(deps: ExecutorDeps, chainId: number): Promise<Pr
       continue;
     }
     if (refreshed.nothingToMove) {
-      const safeNow = await readSafeBalances(client, a, c.safeAddress);
-      const grew = a.safeBalancesBefore && safeNow.some((v, i) => BigInt(v) > BigInt(a.safeBalancesBefore![i] ?? "0"));
+      if (refreshed.alreadyInSafe) {
+        patch(deps, chainId, a.id, {
+          status: "verified",
+          verification: {
+            expected: a.amounts.reduce((s, x) => s + BigInt(x), 0n).toString(),
+            safeDelta: "1",
+            sourceRemaining: "0",
+            note: "Already held by the Safe.",
+            blockNumber: null,
+            evidence: "end_state",
+          },
+        });
+      } else {
+        patch(deps, chainId, a.id, {
+          status: "skipped",
+          verification: {
+            expected: a.amounts.reduce((s, x) => s + BigInt(x), 0n).toString(),
+            safeDelta: null,
+            sourceRemaining: "0",
+            note: "Source no longer holds this asset; nothing to move.",
+            blockNumber: null,
+            evidence: "end_state",
+          },
+        });
+      }
+      continue;
+    }
+    const preview = a.previewAmounts ?? a.amounts;
+    if (amountsMateriallyChanged(preview, refreshed.amounts)) {
       patch(deps, chainId, a.id, {
-        status: grew ? "verified" : "skipped",
-        verification: {
-          expected: a.amounts.reduce((s, x) => s + BigInt(x), 0n).toString(),
-          safeDelta: null,
-          sourceRemaining: "0",
-          note: grew ? "Transfer detected onchain during reconciliation." : "Source no longer holds this asset; nothing to move.",
-          blockNumber: null,
-        },
+        status: "needs_attention",
+        amounts: refreshed.amounts,
+        error: fail("amount_changed", "The amount to move changed since you reviewed the migration. Accept the new amount or go back to Review."),
       });
       continue;
     }
@@ -628,7 +711,7 @@ async function runSequential(deps: ExecutorDeps, chainId: number, ready: Prepare
       fee = item.native ? fee : await getFeeQuote(client);
       hash = await deps.wallet.sendTransaction({ chainId, ...call, gas, ...feeFields(fee) });
     } catch (e) {
-      handleSendError(deps, chainId, [id], e, a.label);
+      await handleSendError(deps, chainId, [id], e, a.label);
       continue;
     }
     patch(deps, chainId, id, { status: "submitted", txHash: hash, txNonce: nonce, submittedAt: Date.now(), attempts: a.attempts + 1 });
@@ -699,8 +782,18 @@ async function runAtomic(deps: ExecutorDeps, chainId: number, ready: Prepared[],
       phase(deps, chainId, "needs_attention", "You declined the wallet's batching upgrade. Switch this network to one-by-one transactions and Retry.");
       throw new HaltRun("upgrade rejected");
     }
-    if (isUserRejection(e)) handleSendError(deps, chainId, ids, e, deployment ? "The deployment and transfer batch" : "The transfer batch");
-    // Wallet advertised batching but cannot execute it: fall back without losing state.
+    if (isUserRejection(e)) await handleSendError(deps, chainId, ids, e, deployment ? "The deployment and transfer batch" : "The transfer batch");
+    const cls = classifySubmissionError(e);
+    if (cls === "ambiguous") {
+      await markUncertain(deps, chainId, ids, `Batch submission outcome unknown (${errorMessage(e)}).`);
+      phase(deps, chainId, "needs_attention", "The batch may have been submitted. Resume to reconcile before retrying.");
+      throw new HaltRun("ambiguous batch");
+    }
+    if (cls !== "not_submitted") {
+      await markUncertain(deps, chainId, ids, `Batch failed with an unclear outcome (${errorMessage(e)}).`);
+      phase(deps, chainId, "needs_attention", "Batch outcome unclear. Resume to reconcile.");
+      throw new HaltRun("batch unclear");
+    }
     for (const id of ids) patch(deps, chainId, id, { status: "planned" });
     log(deps, chainId, "warn", `Atomic batch unavailable (${errorMessage(e)}); falling back to sequential transactions.`);
     deps.dispatch({ type: "SET_STRATEGY", chainId, strategy: "sequential" });
@@ -866,6 +959,16 @@ export async function runChain(deps: ExecutorDeps, chainId: number): Promise<voi
 
 export async function runMigration(deps: ExecutorDeps): Promise<void> {
   deps.dispatch({ type: "RUN_STATE", runState: "running" });
+  const m0 = deps.getMigration();
+  const proofChain = m0.chains[0]?.chainId;
+  if (proofChain) {
+    const readiness = await validateMigrationOwnerProofs(m0, deps.clientFor(proofChain), proofChain);
+    if (!readiness.ok) {
+      log(deps, proofChain, "error", readiness.issues.join(" "));
+      deps.dispatch({ type: "RUN_STATE", runState: "paused" });
+      return;
+    }
+  }
   try {
     for (const c of deps.getMigration().chains) {
       if (deps.shouldStop()) break;

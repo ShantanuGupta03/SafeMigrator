@@ -28,11 +28,6 @@ const KIND_META: Record<SignerKind, { label: string; icon: typeof KeyRound; hint
   other: { label: "Other signer", icon: UserRound, hint: "A trusted person or another Safe. Make sure they are reachable." },
 };
 
-export function selectedMigrationChains(selectedAssetIds: string[], envChainIds: number[]): number[] {
-  const set = new Set(selectedAssetIds.map((id) => Number(id.split(":")[0])));
-  return envChainIds.filter((id) => set.has(id));
-}
-
 export function describeThreshold(threshold: number, owners: number): string {
   if (owners === 1) return "Your Safe will have a single owner. Add more owners so that one lost or stolen key is not the end of your assets.";
   if (threshold === 1) return `Your Safe will have ${owners} owners, and any one of them can approve a transaction alone.`;
@@ -46,13 +41,10 @@ export function describeThreshold(threshold: number, owners: number): string {
 }
 
 export function SignersScreen() {
-  const { draft, setDraft, setStep, source } = useAppState();
+  const { draft, setDraft, setStep, source, selection } = useAppState();
   const { config, configHash, issues } = useSafeConfig();
   const verified = useVerifiedOwners();
-  const chainIds = useMemo(
-    () => selectedMigrationChains(draft.selectedAssetIds, chainsForEnvironment(draft.environment).map((c) => c.id)),
-    [draft.selectedAssetIds, draft.environment],
-  );
+  const chainIds = selection.chainIds;
   const targets = useSafeTargets(config, chainIds);
   const owners = draft.signers.length;
   const warnings = signerWarnings(

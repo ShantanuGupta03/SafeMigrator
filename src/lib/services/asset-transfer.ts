@@ -1,4 +1,4 @@
-import { decodeFunctionResult, encodeFunctionData, getAddress, type Address, type Hex, type PublicClient } from "viem";
+import { decodeFunctionResult, encodeFunctionData, getAddress, type Address, type Hex, type PublicClient, type TransactionReceipt } from "viem";
 import { erc1155Abi, erc20Abi, erc721Abi } from "@/lib/abis";
 import type { ActionVerification, MigrationAction } from "@/lib/domain/types";
 import type { CallLike } from "./gas-estimation";
@@ -59,6 +59,20 @@ export async function simulateTransfer(client: PublicClient, from: Address, acti
     const msg = (e as { shortMessage?: string; message?: string }).shortMessage ?? (e as Error).message;
     return { ok: false, reason: `Simulation reverted: ${msg.slice(0, 200)}` };
   }
+}
+
+/** True when the live amount differs materially from what the user reviewed (>0.5% or any integer step for small amounts). */
+export function amountsMateriallyChanged(preview: readonly string[], current: readonly string[]): boolean {
+  if (preview.length !== current.length) return true;
+  for (let i = 0; i < preview.length; i++) {
+    const p = BigInt(preview[i] ?? "0");
+    const c = BigInt(current[i] ?? "0");
+    if (p === c) continue;
+    if (p === 0n) return c > 0n;
+    const diff = p > c ? p - c : c - p;
+    if (diff * 1000n > p) return true;
+  }
+  return false;
 }
 
 export interface RefreshResult {
@@ -125,16 +139,33 @@ export type VerifyOutcome = {
   verification: ActionVerification;
 };
 
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
 /**
  * Compares Safe holdings after the transfer with the snapshot taken before sending.
  * A submitted or even mined transaction is NOT treated as success until this passes.
  */
+function loggedErc20ToSafe(receipt: TransactionReceipt | null | undefined, token: Address, safe: Address): bigint | null {
+  if (!receipt?.logs?.length) return null;
+  const safeTopic = `0x${safe.slice(2).toLowerCase().padStart(64, "0")}`;
+  let sum = 0n;
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== token.toLowerCase()) continue;
+    if (log.topics[0]?.toLowerCase() !== TRANSFER_TOPIC) continue;
+    if (log.topics.length < 3) continue;
+    if (log.topics[2]?.toLowerCase() !== safeTopic) continue;
+    sum += BigInt(log.data);
+  }
+  return sum > 0n ? sum : null;
+}
+
 export async function verifyTransfer(
   client: PublicClient,
   action: MigrationAction,
   source: Address,
   safe: Address,
   blockNumber: bigint,
+  receipt?: TransactionReceipt | null,
 ): Promise<VerifyOutcome> {
   const expectedTotal = action.amounts.reduce((a, b) => a + BigInt(b), 0n);
   const after = await readSafeBalances(client, action, safe, blockNumber);
@@ -170,10 +201,43 @@ export async function verifyTransfer(
     return { status: "needs_attention", verification: { ...base, note: `NFT owner is ${owner ?? "unknown"}, not the Safe.` } };
   }
 
+  let logged: bigint | null = null;
+  let evidence: ActionVerification["evidence"] = "balance_only";
+  if (receipt && action.kind === "transfer_erc20" && action.contract) {
+    logged = loggedErc20ToSafe(receipt, action.contract, safe);
+    if (logged !== null) evidence = "receipt_logs";
+  } else if (receipt && action.kind === "transfer_native" && receipt.to?.toLowerCase() === safe.toLowerCase()) {
+    logged = expectedTotal;
+    evidence = "receipt_logs";
+  }
+
   const perIdOk = action.kind === "transfer_erc1155" ? deltas.every((d, i) => d === BigInt(action.amounts[i] ?? "0")) : true;
-  if (deltaTotal === expectedTotal && perIdOk) return { status: "verified", verification: base };
+  if (logged !== null && logged === expectedTotal && perIdOk) {
+    return { status: "verified", verification: { ...base, loggedAmount: logged.toString(), evidence } };
+  }
+  if (logged !== null && logged > 0n && logged < expectedTotal) {
+    return {
+      status: "verified_with_discrepancy",
+      verification: { ...base, loggedAmount: logged.toString(), evidence, note: "Receipt logs show less than planned (fee-on-transfer or partial send)." },
+    };
+  }
+  if (deltaTotal === expectedTotal && perIdOk) {
+    if (action.kind === "transfer_native" && sourceRemaining !== null) {
+      const sourceBefore = action.previewAmounts?.[0] ? BigInt(action.previewAmounts[0]) : null;
+      if (sourceBefore !== null && sourceRemaining >= sourceBefore) {
+        return {
+          status: "needs_attention",
+          verification: { ...base, evidence: "end_state", note: "Safe balance increased but the source balance did not decrease as expected — may be an unrelated deposit." },
+        };
+      }
+    }
+    return { status: "verified", verification: { ...base, evidence } };
+  }
   if (action.kind === "transfer_native" && deltaTotal > expectedTotal) {
-    return { status: "verified", verification: { ...base, note: "Safe received additional funds from another source." } };
+    return {
+      status: "needs_attention",
+      verification: { ...base, evidence, note: "Safe received more than this action planned; another deposit may have occurred." },
+    };
   }
   if (deltaTotal > 0n && deltaTotal < expectedTotal) {
     return {

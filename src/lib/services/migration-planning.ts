@@ -9,6 +9,8 @@ import type {
   ExecutionStrategy,
   Migration,
   MigrationAction,
+  MigrationScope,
+  OwnerProof,
   SafeConfig,
   SafeContractSet,
   SupportedSafeVersion,
@@ -436,12 +438,23 @@ export function assembleChainPlan(
   };
 }
 
+function withPreviewAmounts(actions: MigrationAction[]): MigrationAction[] {
+  return actions.map((a) => ({
+    ...a,
+    previewAmounts: a.previewAmounts ?? [...a.amounts],
+    previewTokenIds: a.previewTokenIds ?? [...a.tokenIds],
+  }));
+}
+
 export function createMigration(params: {
   id: string;
   source: Address;
   environment: Migration["environment"];
   safeConfig: SafeConfig;
   verifiedOwners: Address[];
+  ownerProofs?: OwnerProof[];
+  ownerVerificationWaived?: boolean;
+  scope?: MigrationScope | null;
   plans: ChainPlan[];
 }): Migration {
   const chains: ChainMigration[] = params.plans
@@ -454,7 +467,7 @@ export function createMigration(params: {
       strategy: p.strategy,
       phase: "idle",
       message: null,
-      actions: p.actions,
+      actions: withPreviewAmounts(p.actions),
       batches: [],
       safeVerification: null,
     }));
@@ -468,6 +481,9 @@ export function createMigration(params: {
     environment: params.environment,
     safeConfig: params.safeConfig,
     verifiedOwners: params.verifiedOwners,
+    ownerProofs: params.ownerProofs,
+    ownerVerificationWaived: params.ownerVerificationWaived,
+    scope: params.scope ?? null,
     chains,
     runState: "idle",
     log: [],

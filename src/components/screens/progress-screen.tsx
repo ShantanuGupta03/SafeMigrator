@@ -38,6 +38,7 @@ const ACTION_STATUS: Record<ActionStatus, { label: string; variant: "default" | 
   rejected: { label: "Rejected in wallet", variant: "warning" },
   failed: { label: "Failed", variant: "danger" },
   needs_attention: { label: "Needs attention", variant: "warning" },
+  uncertain: { label: "Outcome unknown", variant: "warning" },
 };
 
 const OUTCOME: Record<ChainOutcome, { label: string; variant: "default" | "success" | "warning" | "danger" | "outline" | "info" }> = {

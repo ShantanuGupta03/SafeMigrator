@@ -20,42 +20,45 @@ import {
   type ChainPlan,
   type ChainPreflight,
 } from "@/lib/services/migration-planning";
+import { buildMigrationScope, requiresPartialAck } from "@/lib/services/migration-scope";
 import { getAtomicCapabilities, type ChainCapability, type Eip1193Requester } from "@/lib/services/transaction-capability";
+import { selectionKey } from "@/lib/services/selection";
 import { useAppState } from "../app-state";
 import { useRunner } from "../hooks/use-runner";
 import { useSafeConfig, useSafeTargets, useVerifiedOwners } from "../hooks/use-safe-config";
 import { AddressChip, ChainLabel, ScreenHeading } from "../shared";
-import { selectedMigrationChains, TargetStatus } from "./signers-screen";
+import { TargetStatus } from "./signers-screen";
+
+const PREFLIGHT_MAX_AGE_MS = 30 * 60 * 1000;
 
 export function PreviewScreen() {
-  const { draft, discovery, setStep, source, dispatch } = useAppState();
+  const { draft, discovery, selection, setStep, source, dispatch } = useAppState();
   const { address, connector, chainId: walletChainId } = useConnection();
   const { config } = useSafeConfig();
   const verified = useVerifiedOwners();
   const runner = useRunner();
   const [refresh, setRefresh] = useState(0);
-  const chainIds = useMemo(
-    () => selectedMigrationChains(draft.selectedAssetIds, chainsForEnvironment(draft.environment).map((c) => c.id)),
-    [draft.selectedAssetIds, draft.environment],
-  );
+  const chainIds = selection.chainIds;
+  const selectedAssets = selection.assets;
   const targets = useSafeTargets(config, chainIds, refresh);
   const [preflight, setPreflight] = useState<{
     inputs: unknown[];
     capabilities: Record<number, ChainCapability>;
     preflights: Record<number, ChainPreflight>;
+    plannedAt: number;
   } | null>(null);
   const [overrides, setOverrides] = useState<Record<number, ExecutionStrategy>>({});
   const [confirmed, setConfirmed] = useState(false);
-
-  const selectedAssets = useMemo(() => {
-    const set = new Set(draft.selectedAssetIds);
-    return Object.values(discovery).flatMap((d) => d.assets.filter((a) => set.has(a.id)));
-  }, [discovery, draft.selectedAssetIds]);
+  const [partialAck, setPartialAck] = useState(false);
 
   // Preflight: capabilities + simulations + gas estimates (all real RPC / wallet calls).
-  const ready = !!config && !!source && !targets.loading && Object.keys(targets.targets).length > 0;
-  const inputs = useMemo(() => [config, source, targets, chainIds, selectedAssets, connector], [config, source, targets, chainIds, selectedAssets, connector]);
+  const ready = !!config && !!source && chainIds.length > 0 && !targets.loading && Object.keys(targets.targets).length > 0;
+  const inputs = useMemo(
+    () => [config, source, targets, chainIds, selectionKey(selection), connector, refresh],
+    [config, source, targets, chainIds, selection, connector, refresh],
+  );
   const fresh = preflight !== null && preflight.inputs === inputs;
+  const [migrateError, setMigrateError] = useState<string | null>(null);
   const loading = ready && !fresh;
   const capabilities = fresh ? preflight.capabilities : {};
   const preflights = useMemo(() => (fresh ? preflight.preflights : {}), [fresh, preflight]);
@@ -81,7 +84,7 @@ export function PreviewScreen() {
           return [id, pre] as const;
         }),
       );
-      if (!cancelled) setPreflight({ inputs, capabilities: caps, preflights: Object.fromEntries(entries) });
+      if (!cancelled) setPreflight({ inputs, capabilities: caps, preflights: Object.fromEntries(entries), plannedAt: Date.now() });
     })();
     return () => {
       cancelled = true;
@@ -116,18 +119,56 @@ export function PreviewScreen() {
     return out;
   }, [discovery, draft.environment]);
   const wrongAccount = !address || !source || address.toLowerCase() !== source.toLowerCase();
+  const scopePreview = useMemo(
+    () =>
+      buildMigrationScope({
+        selection,
+        selectedChainIds: draft.selectedChains,
+        plans,
+        discovery,
+        partialAcknowledged: partialAck,
+        plannedAt: preflight?.plannedAt ?? 0,
+      }),
+    [selection, draft.selectedChains, plans, discovery, partialAck, preflight?.plannedAt],
+  );
+  const needsPartialAck = requiresPartialAck(scopePreview);
+  const ownerProofs = useMemo(
+    () =>
+      draft.signers
+        .filter((s) => s.address && s.verification?.configHash && config)
+        .map((s) => ({ owner: s.address!, verification: s.verification! })),
+    [draft.signers, config],
+  );
 
   const start = () => {
-    if (!config || !source) return;
-    const migration = createMigration({
-      id: crypto.randomUUID(),
-      source,
-      environment: draft.environment,
-      safeConfig: config,
-      verifiedOwners: verified,
-      plans: executable,
+    setMigrateError(null);
+    if (!config || !source || !fresh) return;
+    if (needsPartialAck && !partialAck) return;
+    if (Date.now() - preflight!.plannedAt > PREFLIGHT_MAX_AGE_MS) {
+      setMigrateError("Preflight is older than 30 minutes. Click Re-check, then migrate again.");
+      return;
+    }
+    const scope = buildMigrationScope({
+      selection,
+      selectedChainIds: draft.selectedChains,
+      plans,
+      discovery,
+      partialAcknowledged: partialAck,
+      plannedAt: preflight!.plannedAt,
     });
-    dispatch({ type: "CREATE", migration });
+    dispatch({
+      type: "CREATE",
+      migration: createMigration({
+        id: crypto.randomUUID(),
+        source,
+        environment: draft.environment,
+        safeConfig: config,
+        verifiedOwners: verified,
+        ownerProofs,
+        scope,
+        plans,
+      }),
+    });
     setStep("progress");
     void runner.start();
   };
@@ -139,7 +180,7 @@ export function PreviewScreen() {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Source wallet" value={source ? <AddressChip address={source} /> : "—"} />
         <Stat label="Threshold" value={`${threshold} of ${ownerCount} owner${ownerCount === 1 ? "" : "s"}`} />
-        <Stat label="Networks" value={`${executable.length} of ${chainIds.length} ready`} />
+        <Stat label="Networks" value={`${executable.length} of ${plans.length} ready`} />
         <Stat
           label="Wallet confirmations"
           value={loading ? "…" : `${totalConfirmations} prompt${totalConfirmations === 1 ? "" : "s"}`}
@@ -173,6 +214,36 @@ export function PreviewScreen() {
         <p className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="size-4 animate-spin" /> Simulating transactions and estimating gas on each network…
         </p>
+      )}
+      {migrateError && (
+        <Alert variant="warning" title="Cannot start yet">
+          {migrateError}
+        </Alert>
+      )}
+      {ready && !fresh && (
+        <Alert variant="warning" title="Preflight is stale">
+          Selection or network conditions changed. Click Re-check before migrating.
+        </Alert>
+      )}
+      {needsPartialAck && (
+        <Alert variant="warning" title="Not everything in your selection can migrate">
+          <ul className="mt-1 list-disc pl-5 text-sm">
+            {scopePreview.blockedChains.map((b) => (
+              <li key={b.chainId}>
+                {getChain(b.chainId).name}: {b.reasons.join(" ")}
+              </li>
+            ))}
+            {scopePreview.excludedAssets.slice(0, 6).map((a) => (
+              <li key={a.assetId}>
+                {a.label} on {getChain(a.chainId).name}: {a.reason}
+              </li>
+            ))}
+          </ul>
+          <label className="mt-3 flex items-start gap-2 text-sm">
+            <Checkbox checked={partialAck} onChange={(e) => setPartialAck(e.target.checked)} className="mt-0.5" />
+            <span>I understand only {executable.length} network(s) will run now. Blocked items stay in my wallet until I fix them and start a new migration.</span>
+          </label>
+        </Alert>
       )}
 
       <div className="grid gap-4">
@@ -229,7 +300,11 @@ export function PreviewScreen() {
                 <RefreshCw /> Re-check
               </Button>
             </div>
-            <Button size="lg" disabled={!confirmed || executable.length === 0 || loading || wrongAccount || runner.running} onClick={start}>
+            <Button
+              size="lg"
+              disabled={!confirmed || !fresh || executable.length === 0 || loading || wrongAccount || runner.running || (needsPartialAck && !partialAck)}
+              onClick={start}
+            >
               <ShieldCheck /> Migrate to Safe
             </Button>
           </div>
