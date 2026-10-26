@@ -28,8 +28,9 @@ await page.screenshot({ path: `${OUT}connect.png` });
 await page.getByRole("button", { name: /Connect Wallet|Injected/ }).first().click();
 await page.getByRole("button", { name: /Continue/ }).click();
 await page.getByRole("heading", { name: "Here's what your wallet holds." }).waitFor();
-await page.waitForFunction(() => !document.body.innerText.includes("Scanning"), null, { timeout: 60_000 }).catch(() => {});
-await page.waitForTimeout(1500);
+await page.waitForFunction(() => !document.body.innerText.includes("Scanning"), null, { timeout: 90_000 }).catch(() => {});
+await page.getByText("Base Sepolia", { exact: true }).first().waitFor({ timeout: 30_000 }).catch(() => {});
+await page.waitForTimeout(2000);
 await page.screenshot({ path: `${OUT}discover.png`, fullPage: true });
 
 const next = page.getByRole("button", { name: /Choose signers/ });
@@ -44,8 +45,9 @@ if (await next.isEnabled()) {
   await inputs.nth(1).fill("0x52908400098527886E0F7030069857D2E4169EE7");
   await inputs.nth(2).fill("0x8617E340B3D01FA5F11F306F4090FD50E238070D".toLowerCase());
   await inputs.nth(2).press("Tab");
-  await page.getByText("Same Safe address on every selected network").or(page.getByText("Different addresses per network")).first().waitFor({ timeout: 60_000 }).catch(() => {});
-  await page.waitForTimeout(1000);
+  await page.getByText("Same Safe address on every selected network").or(page.getByText("Different addresses per network")).first().waitFor({ timeout: 90_000 }).catch(() => {});
+  await page.getByText("Base Sepolia", { exact: true }).first().waitFor({ timeout: 15_000 }).catch(() => {});
+  await page.waitForTimeout(1500);
   await page.screenshot({ path: `${OUT}signers-filled.png`, fullPage: true });
   const review = page.getByRole("button", { name: /Review migration/ });
   if (await review.isEnabled()) {

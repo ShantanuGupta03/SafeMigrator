@@ -1,5 +1,9 @@
 # Safe Migrator
 
+> **Disclaimer — read first**
+>
+> Safe Migrator is an **independent proof-of-concept**. It is **not affiliated with, endorsed by, or maintained by Safe{Wallet}, Safe Labs, or any Safe product team**. It has **not** been security-audited, is **not** running in production as an official service, and **production-network execution is off by default**. Automated tests and local forks do not replace a formal audit or mainnet validation. Use **testnets** for demos unless you explicitly enable mainnet and accept the risks in [docs/SECURITY.md](docs/SECURITY.md).
+
 **Move the assets in an existing wallet (EOA) into a multi-signature Safe (2-of-3 by default) on several EVM networks, from one guided flow.**
 
 Safe Migrator connects your wallet and discovers what it holds on each supported network. It then
@@ -15,8 +19,10 @@ every action, the app holds no keys, and it never becomes a Safe owner.
 | --- | --- | --- | --- |
 | ![Connect](docs/screenshots/connect.png) | ![Discover](docs/screenshots/discover.png) | ![Signers](docs/screenshots/signers-filled.png) | ![Preview](docs/screenshots/preview.png) |
 
-The screenshots show real Sepolia + Chiado discovery and preflight for a read-only address. The
-preview's fee figures come from real `eth_estimateGas` simulations of the deployment and transfers.
+Screenshots are regenerated from a production build (`node scripts/screenshots.mjs`) with a read-only
+mock wallet against live testnet RPCs. They show Sepolia, Gnosis Chiado and Base Sepolia on Portfolio,
+configurable signers, and Review preflight from real `eth_estimateGas` simulations. Regenerate after UI
+changes so the README stays accurate.
 
 ---
 
@@ -158,25 +164,6 @@ an atomic batch through a real wallet's EIP-5792 implementation.
 * [docs/MILESTONES.md](docs/MILESTONES.md): milestone status
 * [docs/POC_REVIEW.md](docs/POC_REVIEW.md): PoC hardening findings and fix status
 * [docs/POC_VALIDATION.md](docs/POC_VALIDATION.md): manual real-wallet validation checklist
-
-## Design system
-
-The UI follows the Safe brand styleguide and Safe{Wallet}'s light theme. All tokens are in
-[`src/app/globals.css`](src/app/globals.css):
-* **Palette**, with the exact hex values: Safe Green `#12FF80`, Safe Labs Green `#7FFAB7`, the Labs
-  accents `#E7FFF2` and `#D0FFE6`, Safe Black `#0A0A0A`, Bg Grey `#F5F5F5` and Bg Dark `#262626`.
-  Primary CTAs use Safe Black, with Bg Dark on hover.
-* **Type scale** as utilities: `text-hero` (86/100), `tagline` (16/120, caps, 2.4px tracking),
-  `text-hero-body` (22/120), `text-h2` (40/120), `text-h3` (24/120), `text-lead` (18/28),
-  `text-special` (48/120). Body text is 16/24 and headlines use Medium weight.
-* **Rhythm:** `section` (96px) and `block` (64px) spacing tokens.
-
-**Fonts.** Citerne is first in the font stack. DM Sans, the sanctioned fallback, is self-hosted
-through `@fontsource`. To embed Citerne, add `@font-face` rules for Citerne Regular and Medium in
-`globals.css` pointing at files in `public/fonts/`.
-
-**Logo.** The official Safe logo files are not bundled; the header shows a text wordmark. Add the
-supplied logo assets unmodified if this ships as a Safe product.
 
 ## Repository layout
 
