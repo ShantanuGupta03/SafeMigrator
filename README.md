@@ -20,7 +20,7 @@ preview's fee figures come from real `eth_estimateGas` simulations of the deploy
 
 ---
 
-## Status: implemented, experimental and future
+## Status
 
 ### Implemented and tested
 * **Wallet connection** through EIP-6963 injected wallets (MetaMask, Rabby, Coinbase Wallet, Frame, …)
@@ -77,11 +77,7 @@ preview's fee figures come from real `eth_estimateGas` simulations of the deploy
   to sequential transactions. Verified on a Sepolia fork with a real EIP-7702 transaction; not yet
   with a real wallet. See [docs/BATCHING.md](docs/BATCHING.md).
 * **Production networks** (Ethereum, Base, Arbitrum, Optimism, Polygon). Discovery and planning work.
-  Execution is gated and still needs the independent validation run described in
-  [docs/SECURITY.md](docs/SECURITY.md).
-
-### Future work
-See the [V2 backlog](#v2-backlog) below.
+  Execution is gated; see [docs/SECURITY.md](docs/SECURITY.md) before enabling mainnet.
 
 ---
 
@@ -194,26 +190,6 @@ src/lib/state/           Migration state machine and local persistence
 contracts/               Testnet-only sample assets (never for mainnet)
 tests/unit|integration|e2e
 ```
-
-## V2 backlog
-
-1. **Real-wallet batching validation** across MetaMask, Coinbase Smart Wallet, Rabby and Ambire.
-   Once wallets expose the batch's gas parameters, move the native remainder into the batch as well.
-2. **Gas sponsorship** through ERC-4337 paymasters or the Safe relay, so networks that hold only
-   tokens do not need native gas.
-3. **Safe v1.4.1 on every network** once Chiado (or a replacement testnet) carries canonical v1.4.1, and
-   `SafeL2` vs `Safe` choice per network where parity is not required.
-4. **Protocol position adapters** for unwinding or migrating Aave/Compound positions, LP NFTs and
-   staking receipts, with per-protocol review.
-5. **Approval hygiene:** list and revoke the EOA's existing ERC-20/NFT approvals after migration.
-6. **Hardware-wallet owner verification UX** that guides the user through account switching for
-   Ledger/Trezor, plus Safe-owner verification (owner is itself a Safe).
-7. **Post-migration owner rotation:** prepare the Safe transaction that replaces the source EOA as
-   owner, for signing in Safe{Wallet}.
-8. **More indexers and pricing** (Zerion, Moralis, Covalent) with cross-indexer agreement checks.
-9. **More networks:** zkSync and other chains where the Safe address differs or deployment is
-   non-canonical, shown as separate addresses.
-10. **Server-side receipts and notifications:** optional, user-owned, never custodial.
 
 ## License
 
