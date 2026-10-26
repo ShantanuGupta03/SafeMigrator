@@ -1,0 +1,364 @@
+"use client";
+
+import { CheckCircle2, Download, ExternalLink, Loader2, RefreshCw, RotateCcw, ShieldCheck, TriangleAlert } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Alert } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { getPublicClient } from "@/lib/chains/clients";
+import { getChain, safeWalletUrl } from "@/lib/chains/registry";
+import { formatAmount, formatFee, sumBigInt, toBigInt } from "@/lib/domain/amounts";
+import type { ChainMigration, Migration, NetworkDiscovery, SafeInspection } from "@/lib/domain/types";
+import { discoverNetwork, fetchIndexerViaApi, type ManualImport } from "@/lib/services/discovery/asset-discovery";
+import { compareSafeToConfig, inspectSafe } from "@/lib/services/onchain-verification";
+import { chainOutcome, hasInFlightActions, SUCCESS_STATUSES } from "@/lib/state/machine";
+import { useAppState } from "../app-state";
+import { AddressChip, ChainLabel, ScreenHeading, TxLink } from "../shared";
+
+interface LiveChainResult {
+  inspection: SafeInspection | null;
+  issues: string[];
+  safeHoldings: NetworkDiscovery | null;
+  remaining: NetworkDiscovery | null;
+  error: string | null;
+}
+
+function importsFor(c: ChainMigration, extra: ManualImport[]): ManualImport[] {
+  const fromActions: ManualImport[] = c.actions.flatMap((a): ManualImport[] => {
+    if (!a.contract) return [];
+    if (a.kind === "transfer_erc20") return [{ chainId: c.chainId, standard: "erc20", contract: a.contract, tokenId: null }];
+    if (a.kind === "transfer_erc721") return [{ chainId: c.chainId, standard: "erc721", contract: a.contract, tokenId: a.tokenIds[0] ?? null }];
+    if (a.kind === "transfer_erc1155") return a.tokenIds.map((id) => ({ chainId: c.chainId, standard: "erc1155" as const, contract: a.contract!, tokenId: id }));
+    return [];
+  });
+  return [...fromActions, ...extra.filter((m) => m.chainId === c.chainId)];
+}
+
+const jsonReplacer = (_: string, v: unknown) => (typeof v === "bigint" ? v.toString() : v);
+
+export function CompleteScreen() {
+  const { migration, draft, setStep, startNewMigration } = useAppState();
+  const [nonce, setNonce] = useState(0);
+  const [result, setResult] = useState<{ key: string; live: Record<number, LiveChainResult> } | null>(null);
+  const key = migration ? `${migration.id}:${nonce}` : "";
+  const loading = !!migration && result?.key !== key;
+  const live = result?.live ?? {};
+
+  const verify = useCallback(async (m: Migration, extra: ManualImport[]) => {
+    const entries = await Promise.all(
+      m.chains.map(async (c): Promise<[number, LiveChainResult]> => {
+        const client = getPublicClient(c.chainId);
+        try {
+          const imports = importsFor(c, extra);
+          const [inspection, safeHoldings, remaining] = await Promise.all([
+            inspectSafe(client, c.safeAddress),
+            discoverNetwork({ chainId: c.chainId, owner: c.safeAddress, client, manualImports: imports, fetchIndexer: fetchIndexerViaApi }),
+            discoverNetwork({ chainId: c.chainId, owner: m.source, client, manualImports: imports, fetchIndexer: fetchIndexerViaApi }),
+          ]);
+          const issues = inspection.isSafe ? compareSafeToConfig(inspection, m.safeConfig, c.contracts) : ["No Safe deployed at this address."];
+          return [c.chainId, { inspection, issues, safeHoldings, remaining, error: null }];
+        } catch (e) {
+          return [c.chainId, { inspection: null, issues: [], safeHoldings: null, remaining: null, error: (e as Error).message.slice(0, 200) }];
+        }
+      }),
+    );
+    return Object.fromEntries(entries) as Record<number, LiveChainResult>;
+  }, []);
+
+  useEffect(() => {
+    if (!migration) return;
+    let cancelled = false;
+    void verify(migration, draft.manualImports).then((r) => {
+      if (!cancelled) setResult({ key, live: r });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Re-verify only for a different migration or an explicit request, not on every state update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, verify]);
+
+  if (!migration) {
+    return (
+      <Alert variant="info" title="No migration to show">
+        <Button className="mt-2" onClick={() => setStep("discover")}>
+          Back to portfolio
+        </Button>
+      </Alert>
+    );
+  }
+
+  const allCompleted = migration.chains.every((c) => chainOutcome(c) === "completed");
+  const inFlight = hasInFlightActions(migration);
+
+  const exportReceipt = () => {
+    const receipt = {
+      kind: "safe-migrator-receipt",
+      generatedAt: new Date().toISOString(),
+      source: migration.source,
+      safeConfig: migration.safeConfig,
+      verifiedOwners: migration.verifiedOwners,
+      chains: migration.chains.map((c) => ({
+        chainId: c.chainId,
+        network: getChain(c.chainId).name,
+        safeAddress: c.safeAddress,
+        safeVersion: c.safeVersion,
+        strategy: c.strategy,
+        outcome: chainOutcome(c),
+        liveVerification: live[c.chainId]
+          ? {
+              owners: live[c.chainId]!.inspection?.owners ?? null,
+              threshold: live[c.chainId]!.inspection?.threshold ?? null,
+              blockNumber: live[c.chainId]!.inspection?.blockNumber ?? null,
+              issues: live[c.chainId]!.issues,
+            }
+          : null,
+        actions: c.actions.map((a) => ({
+          id: a.id,
+          label: a.label,
+          status: a.status,
+          contract: a.contract,
+          tokenIds: a.tokenIds,
+          amounts: a.amounts,
+          txHash: a.txHash,
+          callsId: a.callsId,
+          feePaid: a.feePaid,
+          verification: a.verification,
+          error: a.error,
+        })),
+        batches: c.batches,
+        safeHoldings: live[c.chainId]?.safeHoldings?.assets.map((x) => ({ id: x.id, symbol: x.symbol, balance: x.balance })) ?? null,
+        remainingInSource: live[c.chainId]?.remaining?.assets.map((x) => ({ id: x.id, symbol: x.symbol, balance: x.balance, classification: x.classification })) ?? null,
+      })),
+      log: migration.log,
+    };
+    const blob = new Blob([JSON.stringify(receipt, jsonReplacer, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `safe-migration-${migration.id.slice(0, 8)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-8">
+      <ScreenHeading
+        title={allCompleted ? "Your assets have a safer home." : "Migration summary"}
+        subtitle={
+          allCompleted
+            ? "Every selected asset was transferred and verified onchain. Results below are re-read live from each network."
+            : "Some networks are not finished. Completed steps are verified onchain; remaining items are listed below."
+        }
+      />
+
+      {!allCompleted && (
+        <Alert variant="warning" title="Incomplete migration">
+          At least one network still has pending, failed or rejected steps. Go back to the progress view to resume or retry — confirmed transfers will not be repeated.
+          <div className="mt-2">
+            <Button size="sm" variant="outline" onClick={() => setStep("progress")}>
+              Back to progress
+            </Button>
+          </div>
+        </Alert>
+      )}
+
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={() => startNewMigration()} disabled={inFlight}>
+            <RotateCcw /> Start a new migration
+          </Button>
+          <Button variant="outline" onClick={exportReceipt}>
+            <Download /> Export receipt (JSON)
+          </Button>
+          <Button variant="ghost" onClick={() => setNonce((n) => n + 1)} disabled={loading}>
+            {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />} Re-verify onchain
+          </Button>
+        </div>
+        <p className="max-w-3xl text-sm text-muted-foreground">
+          {inFlight
+            ? "A transaction is still in flight. Finish it from the progress view before starting a new migration."
+            : `A new migration rescans ${shortSource(migration.source)} for assets that arrived since. With the same owners and threshold they go to this Safe, with no new deployment; change either to create a different Safe.`}
+        </p>
+      </div>
+
+      <div className="grid gap-4">
+        {migration.chains.map((c) => (
+          <ChainResult key={c.chainId} chain={c} migration={migration} live={live[c.chainId]} loading={loading} />
+        ))}
+      </div>
+
+      <Card>
+        <CardHeader>
+          <p className="flex items-center gap-2 font-medium">
+            <ShieldCheck className="size-4" /> Security follow-up
+          </p>
+        </CardHeader>
+        <CardContent>
+          <ul className="list-disc space-y-1.5 pl-5 text-sm">
+            <li>
+              Confirm you can sign with {migration.safeConfig.threshold} independent owner{migration.safeConfig.threshold === 1 ? "" : "s"} — try a zero-value transaction from
+              Safe{"{Wallet}"}.
+            </li>
+            <li>Back up your recovery arrangements for each owner device, stored separately.</li>
+            {migration.safeConfig.owners.some((o) => o.toLowerCase() === migration.source.toLowerCase()) && (
+              <li>Your original wallet is still an owner. Consider replacing it with a fresh independent signer from the Safe settings.</li>
+            )}
+            <li>
+              Review and revoke token approvals the old wallet granted (for example with{" "}
+              <a className="underline" href="https://revoke.cash" target="_blank" rel="noreferrer">
+                revoke.cash
+              </a>
+              ) and disconnect app integrations.
+            </li>
+            <li>Avoid using the retired wallet to store significant funds going forward.</li>
+          </ul>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function ChainResult({ chain: c, migration, live, loading }: { chain: ChainMigration; migration: Migration; live: LiveChainResult | undefined; loading: boolean }) {
+  const meta = getChain(c.chainId);
+  const outcome = chainOutcome(c);
+  const deploy = c.actions.find((a) => a.kind === "deploy_safe");
+  const transfers = c.actions.filter((a) => a.kind !== "deploy_safe");
+  const migrated = transfers.filter((a) => a.status === "verified" || a.status === "verified_with_discrepancy");
+  const notMigrated = transfers.filter((a) => !SUCCESS_STATUSES.has(a.status) || a.status === "skipped");
+  const totalFees = sumBigInt(c.actions.map((a) => toBigInt(a.feePaid)));
+  const walletUrl = safeWalletUrl(c.chainId, c.safeAddress);
+  const fmtNative = (v: bigint | string) => `${formatFee(v, meta.nativeDecimals)} ${meta.nativeSymbol}`;
+  const ownersOk = live?.inspection && live.issues.length === 0;
+
+  return (
+    <Card className={outcome === "completed" ? "" : "ring-2 ring-warning/60"}>
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-3 space-y-0">
+        <ChainLabel chainId={c.chainId} />
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={outcome === "completed" ? "success" : "warning"}>{outcome === "completed" ? "Completed" : "Incomplete"}</Badge>
+          {walletUrl ? (
+            <a href={walletUrl} target="_blank" rel="noreferrer">
+              <Button size="sm">
+                Open in Safe{"{Wallet}"} <ExternalLink />
+              </Button>
+            </a>
+          ) : (
+            <Badge variant="outline">Safe{"{Wallet}"} UI not available on {meta.name}</Badge>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-2 rounded-xl bg-muted p-3">
+            <p className="text-xs text-muted-foreground">Safe address (v{c.safeVersion})</p>
+            <AddressChip address={c.safeAddress} chainId={c.chainId} full className="bg-card" />
+            {deploy?.txHash ? (
+              <p className="text-xs">
+                Deployed in <TxLink chainId={c.chainId} hash={deploy.txHash} />
+              </p>
+            ) : deploy?.status === "skipped" ? (
+              <p className="text-xs text-muted-foreground">Already deployed before this migration.</p>
+            ) : null}
+          </div>
+          <div className="space-y-2 rounded-xl bg-muted p-3">
+            <p className="flex items-center justify-between text-xs text-muted-foreground">
+              Live owner &amp; threshold check
+              {loading && !live ? <Loader2 className="size-3.5 animate-spin" /> : null}
+            </p>
+            {live?.error && <p className="text-xs text-destructive">Could not read the Safe: {live.error}</p>}
+            {live?.inspection && (
+              <>
+                <p className="flex items-center gap-1.5 font-medium">
+                  {ownersOk ? <CheckCircle2 className="size-4 text-success-foreground" /> : <TriangleAlert className="size-4 text-destructive" />}
+                  {live.inspection.isSafe ? `${live.inspection.threshold} of ${live.inspection.owners.length} owners` : "Not deployed"}
+                  <span className="text-xs font-normal text-muted-foreground">at block {live.inspection.blockNumber}</span>
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {live.inspection.owners.map((o) => (
+                    <AddressChip key={o} address={o} className="bg-card" />
+                  ))}
+                </div>
+                {live.issues.map((i) => (
+                  <p key={i} className="text-xs text-destructive">
+                    {i}
+                  </p>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <p className="mb-1 font-medium">Migrated ({migrated.length})</p>
+            <ul className="space-y-1">
+              {migrated.map((a) => (
+                <li key={a.id} className="flex flex-wrap items-center justify-between gap-2">
+                  <span>
+                    {a.label}
+                    {a.status === "verified_with_discrepancy" && <Badge variant="warning" className="ml-1">amount differs</Badge>}
+                  </span>
+                  {a.txHash && <TxLink chainId={c.chainId} hash={a.txHash} />}
+                </li>
+              ))}
+              {migrated.length === 0 && <li className="text-muted-foreground">Nothing transferred yet.</li>}
+            </ul>
+          </div>
+          <div>
+            <p className="mb-1 font-medium">Not migrated ({notMigrated.length})</p>
+            <ul className="space-y-1">
+              {notMigrated.map((a) => (
+                <li key={a.id} className="text-muted-foreground">
+                  {a.label} — {a.verification?.note ?? a.error?.message ?? a.status.replace("_", " ")}
+                </li>
+              ))}
+              {notMigrated.length === 0 && <li className="text-muted-foreground">None.</li>}
+            </ul>
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Holdings title="Safe holdings now" d={live?.safeHoldings ?? null} />
+          <Holdings title={`Still in ${shortSource(migration.source)}`} d={live?.remaining ?? null} showClass />
+        </div>
+
+        <p className="text-xs text-muted-foreground">Network fees paid on {meta.name}: {fmtNative(totalFees)}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+const shortSource = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+
+function Holdings({ title, d, showClass }: { title: string; d: NetworkDiscovery | null; showClass?: boolean }) {
+  return (
+    <div className="rounded-xl border border-border p-3">
+      <p className="mb-1 font-medium">{title}</p>
+      {!d ? (
+        <p className="text-xs text-muted-foreground">Loading…</p>
+      ) : (
+        <>
+          {d.errors.length > 0 && <p className="text-xs text-warning-foreground">Partial read: {d.errors.join(" ")}</p>}
+          <ul className="space-y-0.5">
+            {d.assets.map((x) => (
+              <li key={x.id} className="flex justify-between gap-2">
+                <span>
+                  {x.standard === "erc721" || x.standard === "erc1155" ? `${x.name} #${x.tokenId}` : x.symbol}
+                  {showClass && x.classification !== "transferable" && (
+                    <Badge variant="outline" className="ml-1">
+                      {x.classification.replace("_", " ")}
+                    </Badge>
+                  )}
+                </span>
+                <span className="font-mono text-xs">{x.standard === "erc721" ? "1" : formatAmount(x.balance, x.decimals)}</span>
+              </li>
+            ))}
+            {d.assets.length === 0 && <li className="text-xs text-muted-foreground">No assets found.</li>}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
