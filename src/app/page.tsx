@@ -7,6 +7,7 @@ import { ConnectScreen } from "@/components/screens/connect-screen";
 import { DiscoverScreen } from "@/components/screens/discover-screen";
 import { PreviewScreen } from "@/components/screens/preview-screen";
 import { ProgressScreen } from "@/components/screens/progress-screen";
+import { SafeScreen } from "@/components/screens/safe-screen";
 import { SignersScreen } from "@/components/screens/signers-screen";
 
 export default function Home() {
@@ -22,6 +23,7 @@ export default function Home() {
         {effective === "preview" && <PreviewScreen />}
         {effective === "progress" && <ProgressScreen />}
         {effective === "complete" && <CompleteScreen />}
+        {effective === "safe" && <SafeScreen />}
       </main>
       <footer className="bg-safe-black text-sm text-white/60">
         <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">

@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, Download, ExternalLink, Loader2, RefreshCw, RotateCcw, ShieldCheck, TriangleAlert } from "lucide-react";
+import { CheckCircle2, Download, ExternalLink, FileText, Loader2, RefreshCw, RotateCcw, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -12,9 +12,10 @@ import { formatAmount, formatFee, sumBigInt, toBigInt } from "@/lib/domain/amoun
 import type { ChainMigration, Migration, NetworkDiscovery, SafeInspection } from "@/lib/domain/types";
 import { discoverNetwork, fetchIndexerViaApi, type ManualImport } from "@/lib/services/discovery/asset-discovery";
 import { compareSafeToConfig, inspectSafe } from "@/lib/services/onchain-verification";
+import { buildReceipt, receiptToJson } from "@/lib/services/receipt";
 import { chainOutcome, hasInFlightActions, migrationOutcome, SUCCESS_STATUSES } from "@/lib/state/machine";
 import { useAppState } from "../app-state";
-import { AddressChip, ChainLabel, ScreenHeading, TxLink } from "../shared";
+import { AddressChip, ChainLabel, downloadFile, ScreenHeading, TxLink } from "../shared";
 
 interface LiveChainResult {
   inspection: SafeInspection | null;
@@ -35,12 +36,16 @@ function importsFor(c: ChainMigration, extra: ManualImport[]): ManualImport[] {
   return [...fromActions, ...extra.filter((m) => m.chainId === c.chainId)];
 }
 
-const jsonReplacer = (_: string, v: unknown) => (typeof v === "bigint" ? v.toString() : v);
+/** Build provenance injected by next.config.ts; empty when unknown. */
+export function appBuild() {
+  return { version: process.env.NEXT_PUBLIC_APP_VERSION || null, commit: process.env.NEXT_PUBLIC_BUILD_COMMIT || null };
+}
 
 export function CompleteScreen() {
   const { migration, draft, setStep, startNewMigration } = useAppState();
   const [nonce, setNonce] = useState(0);
-  const [result, setResult] = useState<{ key: string; live: Record<number, LiveChainResult> } | null>(null);
+  const [result, setResult] = useState<{ key: string; live: Record<number, LiveChainResult>; observedAt: number } | null>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const key = migration ? `${migration.id}:${nonce}` : "";
   const loading = !!migration && result?.key !== key;
   const live = result?.live ?? {};
@@ -70,7 +75,7 @@ export function CompleteScreen() {
     if (!migration) return;
     let cancelled = false;
     void verify(migration, draft.manualImports).then((r) => {
-      if (!cancelled) setResult({ key, live: r });
+      if (!cancelled) setResult({ key, live: r, observedAt: Date.now() });
     });
     return () => {
       cancelled = true;
@@ -103,56 +108,23 @@ export function CompleteScreen() {
             ? "Executed networks finished"
             : "Migration summary";
 
+  const receiptFor = () => {
+    const observed = Object.fromEntries(Object.entries(live).map(([id, l]) => [id, { ...l, observedAt: result?.observedAt ?? Date.now() }]));
+    return buildReceipt({ migration, generatedAt: Date.now(), app: appBuild(), live: Object.keys(observed).length ? observed : null });
+  };
   const exportReceipt = () => {
-    const receipt = {
-      kind: "safe-migrator-receipt",
-      generatedAt: new Date().toISOString(),
-      source: migration.source,
-      safeConfig: migration.safeConfig,
-      verifiedOwners: migration.verifiedOwners,
-      scope: migration.scope ?? null,
-      migrationOutcome: summary.outcome,
-      chains: migration.chains.map((c) => ({
-        chainId: c.chainId,
-        network: getChain(c.chainId).name,
-        safeAddress: c.safeAddress,
-        safeVersion: c.safeVersion,
-        strategy: c.strategy,
-        outcome: chainOutcome(c),
-        liveVerification: live[c.chainId]
-          ? {
-              owners: live[c.chainId]!.inspection?.owners ?? null,
-              threshold: live[c.chainId]!.inspection?.threshold ?? null,
-              blockNumber: live[c.chainId]!.inspection?.blockNumber ?? null,
-              issues: live[c.chainId]!.issues,
-            }
-          : null,
-        actions: c.actions.map((a) => ({
-          id: a.id,
-          label: a.label,
-          status: a.status,
-          contract: a.contract,
-          tokenIds: a.tokenIds,
-          amounts: a.amounts,
-          txHash: a.txHash,
-          callsId: a.callsId,
-          feePaid: a.feePaid,
-          verification: a.verification,
-          error: a.error,
-        })),
-        batches: c.batches,
-        safeHoldings: live[c.chainId]?.safeHoldings?.assets.map((x) => ({ id: x.id, symbol: x.symbol, balance: x.balance })) ?? null,
-        remainingInSource: live[c.chainId]?.remaining?.assets.map((x) => ({ id: x.id, symbol: x.symbol, balance: x.balance, classification: x.classification })) ?? null,
-      })),
-      log: migration.log,
-    };
-    const blob = new Blob([JSON.stringify(receipt, jsonReplacer, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `safe-migration-${migration.id.slice(0, 8)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const r = receiptFor();
+    downloadFile(`safe-migration-${migration.id.slice(0, 8)}.receipt.json`, receiptToJson(r));
+  };
+  const exportPdf = async () => {
+    setPdfBusy(true);
+    try {
+      const r = receiptFor();
+      const { renderReceiptPdf } = await import("@/lib/services/receipt-pdf");
+      downloadFile(`safe-migration-${migration.id.slice(0, 8)}.receipt.pdf`, await renderReceiptPdf(r), "application/pdf");
+    } finally {
+      setPdfBusy(false);
+    }
   };
 
   return (
@@ -196,7 +168,10 @@ export function CompleteScreen() {
             <RotateCcw /> Start a new migration
           </Button>
           <Button variant="outline" onClick={exportReceipt}>
-            <Download /> Export receipt (JSON)
+            <Download /> Receipt (JSON)
+          </Button>
+          <Button variant="outline" onClick={() => void exportPdf()} disabled={pdfBusy}>
+            {pdfBusy ? <Loader2 className="animate-spin" /> : <FileText />} Receipt (PDF)
           </Button>
           <Button variant="ghost" onClick={() => setNonce((n) => n + 1)} disabled={loading}>
             {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />} Re-verify onchain

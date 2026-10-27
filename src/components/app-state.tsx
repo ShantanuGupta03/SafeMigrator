@@ -4,16 +4,21 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import type { Address } from "viem";
 import { getPublicClient } from "@/lib/chains/clients";
 import { chainsForEnvironment } from "@/lib/chains/registry";
+import type { SafeProfile } from "@/lib/domain/profile";
 import type { Environment, Migration, NetworkDiscovery, SignerSlot } from "@/lib/domain/types";
 import { discoverNetwork, fetchIndexerViaApi, type ManualImport } from "@/lib/services/discovery/asset-discovery";
+import { enrichWithAdapters } from "@/lib/services/protocols";
 import { effectiveSelection, importsForChains, type EffectiveSelection } from "@/lib/services/selection";
+import { syncProfileWithMigration } from "@/lib/services/safe-profile";
 import { DEFAULT_THRESHOLD } from "@/lib/services/signer-configuration";
 import { chainOutcome, hasInFlightActions, migrationReducer, type MigrationEvent } from "@/lib/state/machine";
-import { archiveMigration, draftKey, loadMigration, loadTestnetImports, saveMigration, clearMigration } from "@/lib/state/persistence";
+import { archiveMigration, draftKey, loadMigration, loadMigrationHistory, loadTestnetImports, saveMigration, clearMigration } from "@/lib/state/persistence";
+import type { OwnerInvite } from "@/lib/services/owner-invites";
+import { loadInvites, loadProfiles, saveInvites, saveProfiles, upsertProfile, withLegacyProfiles, type LoadedProfiles } from "@/lib/state/profile-store";
 
 const importKey = (m: ManualImport) => `${m.chainId}:${m.standard}:${m.contract.toLowerCase()}:${m.tokenId}`;
 
-export type Step = "connect" | "discover" | "signers" | "preview" | "progress" | "complete";
+export type Step = "connect" | "discover" | "signers" | "preview" | "progress" | "complete" | "safe";
 
 export interface Draft {
   environment: Environment;
@@ -25,7 +30,11 @@ export interface Draft {
   /** Signatures required per Safe transaction. */
   threshold: number;
   saltVariant: number;
+  /** Explicit salt from a saved profile; overrides `saltVariant` so the configuration reproduces that Safe. */
+  saltNonce: string | null;
   usedNonces: string[];
+  /** Saved Safe profile this draft works with (v1.5+). Null starts a new Safe. */
+  profileId: string | null;
 }
 
 export function defaultSigners(): SignerSlot[] {
@@ -50,7 +59,9 @@ export function defaultDraft(environment: Environment = "testnet"): Draft {
     signers: defaultSigners(),
     threshold: DEFAULT_THRESHOLD,
     saltVariant: 0,
+    saltNonce: null,
     usedNonces: [],
+    profileId: null,
   };
 }
 
@@ -81,6 +92,23 @@ interface AppStateValue {
   discardMigration(): void;
   /** Rescans the source for a follow-up run. Refused while a transaction is in flight. */
   startNewMigration(): boolean;
+  /** Saved Safe profiles for the connected source (validated on load). */
+  profiles: SafeProfile[];
+  /** Stored profiles that failed validation; kept in storage, never used. */
+  profileIssues: LoadedProfiles["rejected"];
+  /** The profile the draft is linked to, if any. */
+  activeProfile: SafeProfile | null;
+  saveProfile(p: SafeProfile, replaces?: string[]): void;
+  /**
+   * Applies `fn` to the LATEST stored version of a profile. Use this from async work so concurrent
+   * updates (scans, readiness checks, extension checks) never overwrite each other.
+   */
+  updateProfile(id: string, fn: (p: SafeProfile) => SafeProfile): void;
+  /** Links the draft to a saved Safe and loads its original owners, threshold and salt. */
+  selectProfile(id: string | null): void;
+  /** Owner invitations this workspace issued (local nonce registry). */
+  invites: OwnerInvite[];
+  setInvites(fn: (list: OwnerInvite[]) => OwnerInvite[]): void;
 }
 
 const Ctx = createContext<AppStateValue | null>(null);
@@ -100,6 +128,24 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [draft, setDraftState] = useState<Draft>(() => defaultDraft());
   const [discovery, setDiscovery] = useState<Record<number, NetworkDiscovery>>({});
   const [scanning, setScanning] = useState<Record<number, boolean>>({});
+  const [profiles, setProfiles] = useState<SafeProfile[]>([]);
+  const [profileIssues, setProfileIssues] = useState<LoadedProfiles["rejected"]>([]);
+  const profilesRef = useRef<SafeProfile[]>([]);
+  const [invites, setInvitesState] = useState<OwnerInvite[]>([]);
+  const sourceRef = useRef<Address | null>(null);
+
+  const commitProfiles = useCallback((next: SafeProfile[]) => {
+    profilesRef.current = next;
+    setProfiles(next);
+    const src = sourceRef.current;
+    if (src) {
+      try {
+        saveProfiles(localStorage, src, next);
+      } catch {
+        // Storage quota: profiles stay in memory for this session.
+      }
+    }
+  }, []);
 
   // The executor needs synchronous reads, so the ref is the source of truth; state mirrors it for rendering.
   const migrationRef = useRef<Migration | null>(null);
@@ -112,15 +158,29 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     // Persist synchronously after every event: tx hashes must survive a tab close.
     if (migrationRef.current) saveMigration(localStorage, migrationRef.current);
     setMigration(migrationRef.current);
-  }, []);
+    // Record deployments and verification snapshots on the linked profile as they happen.
+    const m = migrationRef.current;
+    if (m?.profileId) {
+      const p = profilesRef.current.find((x) => x.id === m.profileId);
+      if (p) {
+        const next = syncProfileWithMigration(p, m);
+        if (next !== p) commitProfiles(upsertProfile(profilesRef.current, next));
+      }
+    }
+  }, [commitProfiles]);
 
   const getMigration = useCallback(() => migrationRef.current, []);
 
   const pinSource = useCallback(
     (a: Address | null) => {
       setSource(a);
+      sourceRef.current = a;
       setDiscovery({});
       if (!a) {
+        setInvitesState([]);
+        profilesRef.current = [];
+        setProfiles([]);
+        setProfileIssues([]);
         migrationRef.current = null;
         setMigration(null);
         setStep("connect");
@@ -131,6 +191,17 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       const stored = loadMigration(localStorage, a);
       // A fully completed run is history: reconnecting starts from a fresh scan of the wallet.
       const completed = !!stored && isFullyCompleted(stored);
+      setInvitesState(loadInvites(localStorage, a));
+      const loaded = loadProfiles(localStorage, a);
+      setProfileIssues(loaded.rejected);
+      const records = [...(stored ? [stored] : []), ...loadMigrationHistory(localStorage, a)];
+      let withLegacy = loaded.profiles;
+      for (const env of ["testnet", "mainnet"] as const) withLegacy = withLegacyProfiles(withLegacy, a, env, records);
+      if (withLegacy.length !== loaded.profiles.length) commitProfiles(withLegacy);
+      else {
+        profilesRef.current = withLegacy;
+        setProfiles(withLegacy);
+      }
       setDraftState((current) => {
         const saved = storedDraft ?? current;
         const base = completed ? forNewRun(saved) : saved;
@@ -142,7 +213,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       if (!stored || completed) setStep("discover");
       else setStep(stored.runState === "finished" ? "complete" : "progress");
     },
-    [dispatch],
+    [dispatch, commitProfiles],
   );
 
   const setDraft = useCallback(
@@ -171,14 +242,10 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       await Promise.all(
         ids.map(async (chainId) => {
           try {
-            const result = await discoverNetwork({
-              chainId,
-              owner: source,
-              client: getPublicClient(chainId),
-              manualImports: imports,
-              fetchIndexer: fetchIndexerViaApi,
-            });
-            setDiscovery((d) => ({ ...d, [chainId]: result }));
+            const client = getPublicClient(chainId);
+            const result = await discoverNetwork({ chainId, owner: source, client, manualImports: imports, fetchIndexer: fetchIndexerViaApi });
+            const assets = await enrichWithAdapters({ chainId, source, assets: result.assets, client });
+            setDiscovery((d) => ({ ...d, [chainId]: { ...result, assets } }));
           } finally {
             setScanning((s) => ({ ...s, [chainId]: false }));
           }
@@ -201,6 +268,61 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setStep("discover");
     return true;
   }, [setDraft]);
+
+  const saveProfile = useCallback(
+    (p: SafeProfile, replaces: string[] = []) => {
+      const drop = new Set(replaces.filter((id) => id !== p.id));
+      commitProfiles(upsertProfile(profilesRef.current.filter((x) => !drop.has(x.id)), p));
+    },
+    [commitProfiles],
+  );
+
+  const updateProfile = useCallback(
+    (id: string, fn: (p: SafeProfile) => SafeProfile) => {
+      const current = profilesRef.current.find((x) => x.id === id);
+      if (!current) return;
+      const next = fn(current);
+      if (next !== current) commitProfiles(upsertProfile(profilesRef.current, { ...next, updatedAt: Date.now() }));
+    },
+    [commitProfiles],
+  );
+
+  const selectProfile = useCallback(
+    (id: string | null) => {
+      const p = id ? profilesRef.current.find((x) => x.id === id) : null;
+      setDraft((d) => {
+        if (!p) return { ...d, profileId: null, saltNonce: null };
+        const owners = p.original.owners.map((address, slot) => ({
+          slot,
+          input: address,
+          address,
+          ensName: null,
+          kind: (source && address.toLowerCase() === source.toLowerCase() ? "connected_eoa" : "independent_wallet") as SignerSlot["kind"],
+          label: d.signers.find((s) => s.address?.toLowerCase() === address.toLowerCase())?.label || `Signer ${slot + 1}`,
+          verification: d.signers.find((s) => s.address?.toLowerCase() === address.toLowerCase())?.verification ?? null,
+        }));
+        return { ...d, profileId: p.id, environment: p.environment, signers: owners, threshold: p.original.threshold, saltNonce: p.original.saltNonce };
+      });
+    },
+    [setDraft, source],
+  );
+
+  const setInvites = useCallback((fn: (list: OwnerInvite[]) => OwnerInvite[]) => {
+    setInvitesState((list) => {
+      const next = fn(list);
+      const src = sourceRef.current;
+      if (src) {
+        try {
+          saveInvites(localStorage, src, next);
+        } catch {
+          // Storage quota: invitations stay in memory for this session.
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  const activeProfile = useMemo(() => profiles.find((p) => p.id === draft.profileId) ?? null, [profiles, draft.profileId]);
 
   const selection = useMemo(
     () =>
@@ -231,8 +353,39 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       getMigration,
       discardMigration,
       startNewMigration,
+      profiles,
+      profileIssues,
+      activeProfile,
+      saveProfile,
+      updateProfile,
+      selectProfile,
+      invites,
+      setInvites,
     }),
-    [source, pinSource, step, draft, setDraft, discovery, selection, scanning, scan, migration, dispatch, getMigration, discardMigration, startNewMigration],
+    [
+      source,
+      pinSource,
+      step,
+      draft,
+      setDraft,
+      discovery,
+      selection,
+      scanning,
+      scan,
+      migration,
+      dispatch,
+      getMigration,
+      discardMigration,
+      startNewMigration,
+      profiles,
+      profileIssues,
+      activeProfile,
+      saveProfile,
+      updateProfile,
+      selectProfile,
+      invites,
+      setInvites,
+    ],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

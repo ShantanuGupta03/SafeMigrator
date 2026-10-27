@@ -11,28 +11,34 @@ import { Checkbox } from "@/components/ui/input";
 import { getPublicClient } from "@/lib/chains/clients";
 import { chainsForEnvironment, getChain } from "@/lib/chains/registry";
 import { formatAmount, formatFee } from "@/lib/domain/amounts";
-import type { DiscoveredAsset, ExecutionStrategy } from "@/lib/domain/types";
+import type { DiscoveredAsset, ExecutionStrategy, ExpectedGovernance } from "@/lib/domain/types";
 import {
   assembleChainPlan,
   buildActions,
   createMigration,
+  needsDeploymentFor,
   preflightChain,
   type ChainPlan,
   type ChainPreflight,
 } from "@/lib/services/migration-planning";
 import { buildMigrationScope, requiresPartialAck } from "@/lib/services/migration-scope";
+import { chooseProfileForRun, expectedGovernanceFrom, pinRecipe, profileTitle } from "@/lib/services/safe-profile";
 import { getAtomicCapabilities, type ChainCapability, type Eip1193Requester } from "@/lib/services/transaction-capability";
 import { selectionKey } from "@/lib/services/selection";
+import { safeConfigHash } from "@/lib/services/signer-configuration";
 import { useAppState } from "../app-state";
 import { useRunner } from "../hooks/use-runner";
-import { useSafeConfig, useSafeTargets, useVerifiedOwners } from "../hooks/use-safe-config";
+import { isCurrentVerification, usePinnedProfile, useSafeConfig, useSafeTargets, useVerifiedOwners } from "../hooks/use-safe-config";
 import { AddressChip, ChainLabel, ScreenHeading } from "../shared";
 import { TargetStatus } from "./signers-screen";
 
 const PREFLIGHT_MAX_AGE_MS = 30 * 60 * 1000;
 
 export function PreviewScreen() {
-  const { draft, discovery, selection, setStep, source, dispatch } = useAppState();
+  const { draft, discovery, selection, setStep, source, dispatch, profiles, saveProfile, setDraft, activeProfile } = useAppState();
+  const pinnedProfile = usePinnedProfile();
+  const [starting, setStarting] = useState(false);
+  const [acceptedGovernance, setAcceptedGovernance] = useState<Record<number, string>>({});
   const { address, connector, chainId: walletChainId } = useConnection();
   const { config } = useSafeConfig();
   const verified = useVerifiedOwners();
@@ -79,7 +85,7 @@ export function PreviewScreen() {
       const entries = await Promise.all(
         chainIds.map(async (id) => {
           const target = targets.targets[id]!;
-          const actions = buildActions(id, selectedAssets, target.status !== "deployed_matching");
+          const actions = buildActions(id, selectedAssets, needsDeploymentFor(target));
           const pre = await preflightChain({ client: getPublicClient(id), source, config, target, actions, capability: caps[id] });
           return [id, pre] as const;
         }),
@@ -96,14 +102,15 @@ export function PreviewScreen() {
       chainIds
         .filter((id) => preflights[id])
         .map((id) =>
-          assembleChainPlan(preflights[id]!, buildActions(id, selectedAssets, targets.targets[id]?.status !== "deployed_matching"), {
+          assembleChainPlan(preflights[id]!, buildActions(id, selectedAssets, needsDeploymentFor(targets.targets[id])), {
             verifiedOwnerCount: verified.length,
             threshold: draft.threshold,
             strategyOverride: overrides[id],
             walletChainId,
+            governanceAccepted: governanceKey(targets.targets[id]) !== null && acceptedGovernance[id] === governanceKey(targets.targets[id]),
           }),
         ),
-    [chainIds, preflights, selectedAssets, targets.targets, verified.length, draft.threshold, overrides, walletChainId],
+    [chainIds, preflights, selectedAssets, targets.targets, verified.length, draft.threshold, overrides, walletChainId, acceptedGovernance],
   );
   const threshold = config?.threshold ?? draft.threshold;
   const ownerCount = config?.owners.length ?? draft.signers.length;
@@ -135,12 +142,12 @@ export function PreviewScreen() {
   const ownerProofs = useMemo(
     () =>
       draft.signers
-        .filter((s) => s.address && s.verification?.configHash && config)
+        .filter((s) => s.address && config && isCurrentVerification(s.verification, safeConfigHash(config), pinnedProfile?.commitment ?? null))
         .map((s) => ({ owner: s.address!, verification: s.verification! })),
-    [draft.signers, config],
+    [draft.signers, config, pinnedProfile?.commitment],
   );
 
-  const start = () => {
+  const start = async () => {
     setMigrateError(null);
     if (!config || !source || !fresh) return;
     if (needsPartialAck && !partialAck) return;
@@ -148,30 +155,70 @@ export function PreviewScreen() {
       setMigrateError("Preflight is older than 30 minutes. Click Re-check, then migrate again.");
       return;
     }
-    const scope = buildMigrationScope({
-      selection,
-      selectedChainIds: draft.selectedChains,
-      plans,
-      discovery,
-      partialAcknowledged: partialAck,
-      plannedAt: preflight!.plannedAt,
-    });
-    dispatch({
-      type: "CREATE",
-      migration: createMigration({
-        id: crypto.randomUUID(),
-        source,
-        environment: draft.environment,
-        safeConfig: config,
-        verifiedOwners: verified,
-        ownerProofs,
-        scope,
+    const execPlans = plans.filter((p) => p.executable);
+    if (execPlans.length === 0) return;
+    setStarting(true);
+    try {
+      // Pin the deployment identity before anything is sent; later runs reuse it verbatim.
+      let profile = pinnedProfile;
+      if (!profile) {
+        const version = targets.commonVersion;
+        if (!version) throw new Error("No Safe version is shared by every network of this environment, so the address cannot be pinned.");
+        const first = execPlans[0]!.chainId;
+        const pin = await pinRecipe(getPublicClient(first), first, config, version);
+        const chosen = chooseProfileForRun({ profiles, source, environment: draft.environment, config, pinned: pin });
+        profile = chosen.profile;
+        saveProfile(profile, chosen.replaces);
+      }
+      const different = execPlans.filter((p) => p.safeAddress !== profile!.safeAddress || p.safeVersion !== profile!.recipe!.safeVersion);
+      if (different.length) {
+        throw new Error(
+          `${different.map((p) => getChain(p.chainId).name).join(", ")} would use a different Safe address than the saved Safe. Deselect ${different.length > 1 ? "those networks" : "that network"} to continue.`,
+        );
+      }
+      const expectedGovernance: Record<number, ExpectedGovernance> = {};
+      for (const p of execPlans) {
+        const t = targets.targets[p.chainId];
+        if (t?.status === "deployed_governance_changed" && t.inspection) expectedGovernance[p.chainId] = expectedGovernanceFrom(t.inspection);
+      }
+      const scope = buildMigrationScope({
+        selection,
+        selectedChainIds: draft.selectedChains,
         plans,
-      }),
-    });
-    setStep("progress");
-    void runner.start();
+        discovery,
+        partialAcknowledged: partialAck,
+        plannedAt: preflight!.plannedAt,
+      });
+      setDraft((d) => ({ ...d, profileId: profile!.id }));
+      dispatch({
+        type: "CREATE",
+        migration: createMigration({
+          id: crypto.randomUUID(),
+          source,
+          environment: draft.environment,
+          safeConfig: config,
+          verifiedOwners: verified,
+          ownerProofs,
+          scope,
+          plans,
+          profileId: profile.id,
+          deploymentCommitment: profile.commitment,
+          purpose: profile.runIds.length > 0 ? "sweep" : "migration",
+          expectedGovernance,
+        }),
+      });
+      setStep("progress");
+      void runner.start();
+    } catch (e) {
+      setMigrateError((e as Error).message);
+    } finally {
+      setStarting(false);
+    }
   };
+
+  const changedGovernance = plans
+    .map((p) => targets.targets[p.chainId])
+    .filter((t): t is NonNullable<typeof t> => t?.status === "deployed_governance_changed");
 
   return (
     <div className="space-y-8">
@@ -246,6 +293,52 @@ export function PreviewScreen() {
         </Alert>
       )}
 
+      <Alert variant="info" title={pinnedProfile ? `Saved Safe: ${profileTitle(pinnedProfile)}` : "A saved Safe will be created"}>
+        {pinnedProfile ? (
+          <span>
+            Destination fixed by the saved deployment recipe (Safe v{pinnedProfile.recipe!.safeVersion}, commitment{" "}
+            <span className="font-mono">{pinnedProfile.commitment!.slice(0, 10)}…</span>). The version is not renegotiated, so the address cannot change.
+          </span>
+        ) : (
+          <span>
+            {activeProfile && !pinnedProfile
+              ? "These owners, threshold or salt differ from your saved Safe, so this creates a different Safe. "
+              : ""}
+            Starting pins this Safe&apos;s deployment recipe so later runs, sweeps and new networks reuse exactly the same address.
+          </span>
+        )}
+      </Alert>
+
+      {changedGovernance.map((t) => (
+        <Alert key={t.chainId} variant="warning" title={`${getChain(t.chainId).name}: the Safe's governance changed since it was deployed`}>
+          <ul className="mt-1 list-disc pl-5 text-sm">
+            {t.issues.map((i) => (
+              <li key={i}>{i}</li>
+            ))}
+          </ul>
+          {t.inspection && (
+            <p className="mt-2 text-sm">
+              Current: {t.inspection.threshold} of {t.inspection.owners.length} owners at block {t.inspection.blockNumber}. Assets sent here can be moved by the current owners,
+              not necessarily the owners you originally chose.
+            </p>
+          )}
+          {getChain(t.chainId).environment === "mainnet" ? (
+            <p className="mt-2 font-medium text-destructive">
+              Production networks require owner proofs for the current owners, which this version cannot collect for changed governance. This network is blocked.
+            </p>
+          ) : (
+            <label className="mt-3 flex items-start gap-2 text-sm">
+              <Checkbox
+                checked={acceptedGovernance[t.chainId] === governanceKey(t)}
+                onChange={(e) => setAcceptedGovernance((a) => ({ ...a, [t.chainId]: e.target.checked ? (governanceKey(t) ?? "") : "" }))}
+                className="mt-0.5"
+              />
+              <span>I reviewed the current owners and settings above and want to send assets to this Safe. Execution stops if anything changes again before sending.</span>
+            </label>
+          )}
+        </Alert>
+      ))}
+
       <div className="grid gap-4">
         {plans.map((p) => (
           <PlanCard
@@ -302,8 +395,8 @@ export function PreviewScreen() {
             </div>
             <Button
               size="lg"
-              disabled={!confirmed || !fresh || executable.length === 0 || loading || wrongAccount || runner.running || (needsPartialAck && !partialAck)}
-              onClick={start}
+              disabled={!confirmed || !fresh || executable.length === 0 || loading || wrongAccount || runner.running || starting || (needsPartialAck && !partialAck)}
+              onClick={() => void start()}
             >
               <ShieldCheck /> Migrate to Safe
             </Button>
@@ -312,6 +405,12 @@ export function PreviewScreen() {
       </Card>
     </div>
   );
+}
+
+/** Identifies one reviewed observation; a newer observation needs a new acceptance. */
+function governanceKey(t: { status: string; inspection: { blockNumber: string } | null; chainId: number } | undefined): string | null {
+  if (!t || t.status !== "deployed_governance_changed" || !t.inspection) return null;
+  return `${t.chainId}:${t.inspection.blockNumber}`;
 }
 
 function Stat({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {

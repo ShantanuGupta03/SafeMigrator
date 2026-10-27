@@ -1,24 +1,22 @@
 "use client";
 
 import { ArrowLeft, ArrowRight, BadgeCheck, Cpu, KeyRound, Loader2, Plus, Smartphone, UserRound, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { Address } from "viem";
-import { useConfig, useConnection } from "wagmi";
-import { getChainId, signTypedData } from "wagmi/actions";
+import { useConnection } from "wagmi";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Checkbox, Input, Select } from "@/components/ui/input";
 import { getPublicClient } from "@/lib/chains/clients";
-import { chainsForEnvironment, findChain } from "@/lib/chains/registry";
+import { chainsForEnvironment } from "@/lib/chains/registry";
 import type { ChainSafeTarget, SignerKind, SignerSlot } from "@/lib/domain/types";
-import { challengeTypedData, createChallenge, verifyChallengeSignature } from "@/lib/services/ownership-verification";
 import { looksLikeEns, MAX_OWNERS, parseAddressInput, resolveEns, signerWarnings, thresholdRisk } from "@/lib/services/signer-configuration";
-import { errorMessage, isUserRejection } from "@/lib/services/wallet-connection";
 import { cn, shortAddress } from "@/lib/utils";
 import { emptySigner, useAppState } from "../app-state";
-import { useSafeConfig, useSafeTargets, useVerifiedOwners } from "../hooks/use-safe-config";
+import { isCurrentVerification, usePinnedProfile, useSafeConfig, useSafeTargets, useVerifiedOwners } from "../hooks/use-safe-config";
+import { OwnerVerificationPanel } from "../owner-verification-panel";
 import { AddressChip, ChainLabel, ScreenHeading } from "../shared";
 
 const KIND_META: Record<SignerKind, { label: string; icon: typeof KeyRound; hint: string }> = {
@@ -44,11 +42,12 @@ export function SignersScreen() {
   const { draft, setDraft, setStep, source, selection } = useAppState();
   const { config, configHash, issues } = useSafeConfig();
   const verified = useVerifiedOwners();
+  const pinnedProfile = usePinnedProfile();
   const chainIds = selection.chainIds;
   const targets = useSafeTargets(config, chainIds);
   const owners = draft.signers.length;
   const warnings = signerWarnings(
-    draft.signers.map((s) => ({ ...s, verification: s.verification?.configHash === configHash ? s.verification : null })),
+    draft.signers.map((s) => ({ ...s, verification: isCurrentVerification(s.verification, configHash, pinnedProfile?.commitment ?? null) ? s.verification : null })),
     source,
     draft.threshold,
   );
@@ -89,7 +88,6 @@ export function SignersScreen() {
         </Alert>
       )}
 
-      {verified.length < owners && <VerifyGuide source={source} ready={!!configHash} threshold={draft.threshold} />}
 
       <div className="grid gap-4 lg:grid-cols-3">
         {draft.signers.map((s) => (
@@ -112,6 +110,13 @@ export function SignersScreen() {
           </button>
         )}
       </div>
+
+      <OwnerVerificationPanel
+        config={config}
+        commonVersion={targets.commonVersion}
+        targetsReady={!targets.loading && !targets.error && !blockingTarget}
+        scopeChainIds={chainIds.length ? chainIds : chainsForEnvironment(draft.environment).map((c) => c.id)}
+      />
 
       {globalIssues.map((i) => (
         <Alert key={i.code} variant="danger">
@@ -157,8 +162,9 @@ export function SignersScreen() {
                 min={0}
                 className="w-24"
                 value={draft.saltVariant}
-                onChange={(e) => setDraft((d) => ({ ...d, saltVariant: Math.max(0, Math.floor(Number(e.target.value) || 0)) }))}
+                onChange={(e) => setDraft((d) => ({ ...d, saltNonce: null, saltVariant: Math.max(0, Math.floor(Number(e.target.value) || 0)) }))}
               />
+              {draft.saltNonce && <Badge variant="outline">Salt from saved Safe</Badge>}
               {config && <span className="font-mono text-xs text-muted-foreground">saltNonce {config.saltNonce.slice(0, 12)}…</span>}
             </div>
           </details>
@@ -244,36 +250,6 @@ function ThresholdDiagram({
   );
 }
 
-function VerifyGuide({ source, ready, threshold }: { source: Address | null; ready: boolean; threshold: number }) {
-  const steps = [
-    "Enter every owner address and pick the threshold. The signature is bound to this exact configuration, so changing it later clears verifications.",
-    "In your wallet extension, switch the active account to the owner you want to verify. If the site asks, connect that account too.",
-    "Click “Verify control” on that owner's card and sign the message. It is an off-chain signature: no transaction, no gas, no funds move.",
-    `Repeat for the next owner, then switch back to the source wallet${source ? ` ${shortAddress(source)}` : ""}. Migration transactions only go out from the source.`,
-  ];
-  return (
-    <Card>
-      <CardHeader>
-        <p className="font-medium">How to verify owners</p>
-        <p className="text-sm text-muted-foreground">
-          Verifying is optional on testnets and required for {threshold} owner{threshold === 1 ? "" : "s"} on production networks. It proves you control each address you typed.
-          Your progress is kept while you switch accounts.
-        </p>
-      </CardHeader>
-      <CardContent>
-        <ol className="grid gap-3 text-sm md:grid-cols-4">
-          {steps.map((s, i) => (
-            <li key={s} className={cn("flex gap-3 rounded-2xl bg-muted p-4", i === 0 && ready && "opacity-60")}>
-              <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-labs-green text-xs font-medium">{i + 1}</span>
-              <span>{s}</span>
-            </li>
-          ))}
-        </ol>
-      </CardContent>
-    </Card>
-  );
-}
-
 function SignerCard({
   signer,
   issue,
@@ -287,14 +263,12 @@ function SignerCard({
   onChange: (p: Partial<SignerSlot>) => void;
   onRemove?: () => void;
 }) {
-  const { draft, setDraft, source } = useAppState();
-  const wagmiConfig = useConfig();
+  const { source } = useAppState();
+  const pinned = usePinnedProfile();
   const { address: connected } = useConnection();
   const [resolving, setResolving] = useState(false);
-  const [verifying, setVerifying] = useState(false);
-  const [verifyError, setVerifyError] = useState<string | null>(null);
   const meta = KIND_META[signer.kind];
-  const isVerified = !!signer.verification && signer.verification.configHash === configHash;
+  const isVerified = isCurrentVerification(signer.verification, configHash, pinned?.commitment ?? null);
   const connectedMatches = !!connected && !!signer.address && connected.toLowerCase() === signer.address.toLowerCase();
 
   const commitInput = async (raw: string) => {
@@ -308,32 +282,6 @@ function SignerCard({
       return onChange({ input: v, address: resolved, ensName: resolved ? v : null, verification: null });
     }
     onChange({ input: v, address: null, ensName: null, verification: null });
-  };
-
-  const verify = async () => {
-    if (!signer.address || !configHash || !connected) return;
-    setVerifyError(null);
-    setVerifying(true);
-    try {
-      const walletChain = await getChainId(wagmiConfig);
-      const chainId = findChain(walletChain) ? walletChain : chainsForEnvironment(draft.environment)[0]!.id;
-      const challenge = createChallenge(signer.address, configHash, chainId);
-      const typed = challengeTypedData(challenge);
-      const signature = await signTypedData(wagmiConfig, { account: connected, ...typed });
-      const result = await verifyChallengeSignature({
-        challenge,
-        signature,
-        client: getPublicClient(chainId),
-        usedNonces: new Set(draft.usedNonces),
-      });
-      setDraft((d) => ({ ...d, usedNonces: [...d.usedNonces, challenge.nonce] }));
-      if (!result.ok) return setVerifyError(result.reason);
-      onChange({ verification: result.verification });
-    } catch (e) {
-      setVerifyError(isUserRejection(e) ? "Signature request was rejected." : errorMessage(e));
-    } finally {
-      setVerifying(false);
-    }
   };
 
   return (
@@ -415,26 +363,7 @@ function SignerCard({
         {issue && signer.input && <p className="text-xs font-medium text-destructive">{issue}</p>}
 
         {signer.address && !isVerified && (
-          <div className="space-y-2 rounded-xl bg-muted p-3 text-xs">
-            <p>
-              Prove this owner is controlled by you: sign a message (no transaction, no funds) from{" "}
-              <span className="font-mono">{shortAddress(signer.address)}</span>.
-            </p>
-            {!configHash ? (
-              <p className="text-muted-foreground">Enter every owner first — the signature covers the full owner set and threshold.</p>
-            ) : connectedMatches ? (
-              <p className="font-medium">This account is connected. Sign to verify.</p>
-            ) : (
-              <p className="text-muted-foreground">
-                Your wallet is on {connected ? <span className="font-mono">{shortAddress(connected)}</span> : "no account"}. Switch its active account to{" "}
-                <span className="font-mono">{shortAddress(signer.address)}</span> to enable this button. Hardware wallets work through MetaMask, Rabby or WalletConnect.
-              </p>
-            )}
-            <Button size="sm" variant={connectedMatches && configHash ? "default" : "outline"} disabled={!connectedMatches || !configHash || verifying} onClick={() => void verify()}>
-              {verifying ? <Loader2 className="animate-spin" /> : <BadgeCheck />} Verify control
-            </Button>
-            {verifyError && <p className="font-medium text-destructive">{verifyError}</p>}
-          </div>
+          <p className="text-xs text-muted-foreground">Not verified yet. Use “Verify owners” below to sign here or send this owner an invitation.</p>
         )}
       </CardContent>
     </Card>
@@ -482,11 +411,13 @@ export function TargetStatus({ t }: { t: ChainSafeTarget }) {
       return <Badge variant="outline">Will be deployed</Badge>;
     case "deployed_matching":
       return <Badge variant="success">Already deployed · config verified</Badge>;
+    case "deployed_governance_changed":
+      return <Badge variant="warning">Deployed · governance changed</Badge>;
     case "deployed_mismatch":
       return <Badge variant="danger">Conflicting contract</Badge>;
     case "incompatible":
       return <Badge variant="danger">Incompatible network</Badge>;
     default:
-      return <Badge variant="danger">Verification error</Badge>;
+      return <Badge variant="danger">{t.unavailable ? "Network unreachable" : "Verification error"}</Badge>;
   }
 }

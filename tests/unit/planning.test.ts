@@ -124,6 +124,16 @@ describe("chain plan assembly", () => {
     expect(assembleChainPlan(preflight({ pendingTransactions: 1 }), actions, opts).blockers.join(" ")).toMatch(/pending/);
   });
 
+  it("blocks a deployment the saved Safe forbids and changed governance until it is accepted", () => {
+    const actions = buildActions(SEPOLIA, assets, true);
+    const blocked = assembleChainPlan(preflight({ target: { ...target("not_deployed"), deploymentBlocked: "Sepolia: owners changed." } }), actions, opts);
+    expect(blocked.blockers.join(" ")).toMatch(/new deployment is not allowed here: Sepolia: owners changed/);
+    const existing = buildActions(SEPOLIA, assets, false);
+    const changed = preflight({ target: { ...target("deployed_governance_changed"), issues: ["Threshold is 1, expected 2."] } });
+    expect(assembleChainPlan(changed, existing, opts).blockers.join(" ")).toMatch(/changed since it was deployed/);
+    expect(assembleChainPlan(changed, existing, { ...opts, governanceAccepted: true }).blockers).toEqual([]);
+  });
+
   it("requires verified owners on production networks", () => {
     const pre = preflight({ gate: { enabled: true, reason: null, requiresVerifiedOwners: true } });
     const plan = assembleChainPlan(pre, buildActions(SEPOLIA, assets, true), opts);

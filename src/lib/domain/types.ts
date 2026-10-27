@@ -59,6 +59,8 @@ export interface DiscoveredAsset {
   reasons: string[];
   sources: AssetSource[];
   verifiedOnchain: boolean;
+  /** Set only by a protocol adapter that identified this asset from onchain registry reads. */
+  protocol?: { adapter: "aave-v3"; market: string; pool: Address; underlying: Address };
 }
 
 export type CoverageLevel = "indexed" | "known_list_only" | "manual_only" | "unavailable";
@@ -91,8 +93,14 @@ export interface NetworkDiscovery {
 
 export type SignerKind = "connected_eoa" | "hardware" | "independent_wallet" | "other";
 
+/**
+ * A verified owner signature. Records without `schema` are legacy v1 challenges (bound to the
+ * configuration hash only); `owner-ack-v2` also binds the pinned deployment commitment and the
+ * invitation's scope, and is what v1.5 creates.
+ */
 export interface OwnerVerification {
   method: "eip712";
+  schema?: "owner-ack-v2";
   signature: Hex;
   nonce: Hex;
   issuedAt: number;
@@ -100,8 +108,16 @@ export interface OwnerVerification {
   verifiedAt: number;
   /** Signature verified as plain ECDSA (EOA) or via ERC-1271/6492 (contract wallet). */
   signerType: "eoa" | "contract";
-  /** Chain used for ERC-1271 verification. */
+  /** Network the signature's EIP-712 domain names; ERC-1271 signatures are only checked there. */
   chainId: number;
+  /* v2 only */
+  expiresAt?: number;
+  deploymentCommitment?: Hex;
+  scopeChainIds?: number[];
+  safeAddress?: Address;
+  profileId?: string;
+  source?: Address;
+  environment?: Environment;
 }
 
 export interface SignerSlot {
@@ -150,11 +166,15 @@ export interface SafeInspection {
   modules: Address[];
   nonce: BigIntString | null;
   blockNumber: BigIntString;
+  /** Hash of the block the inspection was read at, when the RPC returned it. */
+  blockHash?: Hex | null;
 }
 
 export type SafeTargetStatus =
   | "not_deployed"
   | "deployed_matching"
+  /** A Safe from the pinned recipe whose owners, threshold or security settings were changed after deployment. */
+  | "deployed_governance_changed"
   | "deployed_mismatch"
   | "incompatible"
   | "error";
@@ -167,6 +187,12 @@ export interface ChainSafeTarget {
   status: SafeTargetStatus;
   inspection: SafeInspection | null;
   issues: string[];
+  /** Resolved from a saved profile's pinned recipe (no version negotiation). */
+  pinned?: boolean;
+  /** The RPC could not be read; the status says nothing about the chain itself. */
+  unavailable?: boolean;
+  /** Deploying here is not allowed (for example governance changed on another network of the saved Safe). */
+  deploymentBlocked?: string | null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -286,6 +312,8 @@ export interface MigrationAction {
   /** Block at which `safeBalancesBefore` was read. */
   snapshotBlock?: BigIntString | null;
   uncertainty?: Uncertainty | null;
+  /** Protocol position moved by a plain transfer under an adapter's rules (rechecked before sending). */
+  protocol?: { adapter: "aave-v3"; market: string; pool: Address; underlying: Address } | null;
 }
 
 export type ChainPhase =
@@ -326,6 +354,25 @@ export interface ChainMigration {
   actions: MigrationAction[];
   batches: BatchRecord[];
   safeVerification: SafeInspection | null;
+  /**
+   * Owners and threshold the user reviewed for an already deployed Safe whose governance changed
+   * since deployment. When set, execution verifies the live Safe against this instead of `safeConfig`.
+   */
+  expectedGovernance?: ExpectedGovernance | null;
+}
+
+export type MigrationPurpose = "migration" | "extension" | "sweep";
+
+/** The full security state of an existing Safe that the user reviewed and accepted. */
+export interface ExpectedGovernance {
+  owners: Address[];
+  threshold: number;
+  singleton: Address | null;
+  fallbackHandler: Address | null;
+  guard: Address | null;
+  modules: Address[];
+  /** Block of the observation the user reviewed. */
+  observedAtBlock: BigIntString;
 }
 
 export interface Migration {
@@ -348,6 +395,11 @@ export interface Migration {
   scope?: MigrationScope | null;
   chains: ChainMigration[];
   runState: "idle" | "running" | "paused" | "finished";
+  /** Saved Safe profile this run belongs to (v1.5+). Absent on older records. */
+  profileId?: string | null;
+  /** Commitment to the pinned deployment recipe the run used (v1.5+). */
+  deploymentCommitment?: Hex | null;
+  purpose?: MigrationPurpose;
   log: MigrationLogEntry[];
 }
 

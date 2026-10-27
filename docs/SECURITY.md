@@ -16,7 +16,7 @@ what it guarantees, what it relies on, and what has not been validated yet.
 | 8 | Explicit confirmation | The preview shows destination per network, owners, threshold, networks, assets, fees, strategy and confirmation count. A review checkbox is required before *Migrate to Safe*. |
 | 9 | No transfer to an unverified Safe | Sequential: transfers start only after `compareSafeToConfig` returns zero issues, re-run when resuming. Atomic batch: the deployment is the batch's first call, and its CREATE2 address (recomputed from the checked calldata) must equal the transfers' target, so the transfers revert unless that exact Safe is created. The Safe is verified right after, before the native transfer. |
 | 10 | Chain-ID validation | The RPC chain ID is checked during prediction and discovery. The wallet's chain ID and account are checked before each send (`WrongChainError`, `WrongAccountError`). |
-| 11 | No replayable authorizations | Owner challenges are EIP-712, typed with app name and version plus chain ID. Each is bound to the config hash, a random 32-byte nonce and `issuedAt`, is single-use and expires after 10 minutes. They authorize nothing onchain. |
+| 11 | No replayable authorizations | Owner acknowledgements (v1.5, EIP-712 domain version 2) bind the owner, the full owner list and threshold, the pinned deployment commitment, the Safe address, source, profile, environment, target networks (+ scope commitment), a random 32-byte nonce, `issuedAt` and `expiresAt`. Responses are accepted only for invitations issued in the same workspace, before expiry, once; issuance more than 5 minutes in the future is rejected. Accepted proofs count for execution for 7 days. They authorize nothing onchain and are never used as spending authorization. Legacy v1 challenges remain verifiable for pre-v1.5 runs only. |
 | 12 | EIP-7702 is not a Safe | Delegated EOAs are labelled as such. Delegation is never offered as a substitute for migration. |
 | 13 | No silent spam transfers | Suspicious assets are excluded from Select all and hidden by default. Selecting one requires an explicit choice. |
 | 14 | Credentials server-side | `RPC_URL_*`, `ALCHEMY_API_KEY` and `ASSET_INDEXER` have no `NEXT_PUBLIC_` prefix and are read only in route handlers. |
@@ -29,6 +29,20 @@ Additional measures:
 * Security headers: `X-Frame-Options: DENY` (prevents clickjacking of wallet prompts), `nosniff`,
   a strict referrer policy and a restrictive permissions policy.
 * Amounts are BigInt end to end, and gas and fee safety margins are configurable.
+
+### v1.5 additions
+
+| Property | How it is enforced |
+| --- | --- |
+| Destination cannot drift | A saved Safe's deployment recipe is pinned and re-derived on every load (`parseProfile`): commitment and CREATE2 address are recomputed, canonical contract addresses and the setup initializer are checked. Pinned networks never renegotiate the version; an unreachable network is "unknown", not "incompatible". For new configurations an unreachable network leaves the version undecided instead of choosing from a subset. |
+| Untrusted local and imported data | Profiles, profile files, invitation payloads, signed responses, invitation records and receipts are parsed with size limits and runtime schemas (addresses, chain IDs within the environment, enums, timestamps, commitments). Corrupted stored profiles are reported and never repaired or used. Imported governance observations are discarded; every action re-reads the chain. |
+| Proofs checked on the right network | Each stored proof is re-verified with a client for the network its EIP-712 domain names. A contract-wallet (ERC-1271) proof counts only on that network. |
+| Governance changes are never papered over | A Safe whose owners or settings changed is never reused silently: sending to it needs acceptance of the observed state, which the executor re-checks exactly before transfers; production networks stay blocked. Deploying the recipe on another network is blocked while any known deployment diverged or cannot be read, both from "Add network" and from Review. |
+| Every deployment targets the verified address | Sequential deployments now also recompute the CREATE2 target from the deployment calldata (previously only batched deployments did). |
+| Fresh state after writes | Block numbers are read uncached in discovery, inspection and execution, so a check right after a deployment cannot read code at a stale block. |
+| Receipts are commitments, not certificates | SHA-256 over canonical JSON; the inspector hashes the file's own JSON (added fields or changed case are detected). Loading a receipt performs no network request; "Recheck onchain" is explicit and only reads supported networks through the read-only proxy. Receipts exclude private labels, owner signatures and the debug log. |
+| No unattended activity | Late-arrival checks only read; polling runs only while the tab is visible, never overlaps, and is bounded. A sweep is a new reviewed run that the user signs step by step. |
+| Protocol positions | Off by default. The Aave v3 beta identifies aTokens only through registry-backed protocol reads, requires zero (and readable) debt in the pool, and re-checks immediately before submission. |
 
 ## Trust assumptions
 
@@ -45,10 +59,16 @@ Additional measures:
 
 ## Known limitations
 
-* **Owner verification** proves control only for owners who can sign through the connected wallet,
-  one account at a time. A hardware-wallet address can be verified only if that device is connected,
-  for example through MetaMask/Rabby or WalletConnect. Unverified owners are flagged and block
-  production execution.
+* **Owner verification** proves control of an address at signing time. Co-owners can verify from
+  their own device through an invitation link, but the link itself does not authenticate the sender:
+  co-owners are told to confirm the owner list out of band. The nonce registry is local to the
+  initiator's browser workspace, not global. Proofs do not show that owners are different people,
+  devices or seed phrases.
+* **Saved Safes, invitations and watch state live in one browser's localStorage.** Clearing site
+  data loses them (export profiles to keep them). Nothing is monitored after the app is closed.
+* **Changed governance** (owners added/removed after deployment) is tracked per network but never
+  synchronised; v1.5 cannot collect owner proofs for owners that were added later, so production
+  networks with changed governance are blocked.
 * **Fee-on-transfer and rebasing tokens** are detected after the fact, as a balance discrepancy.
   They are not prevented. Rebasing balances can drift between preview and execution; the executor
   uses the live balance at send time.

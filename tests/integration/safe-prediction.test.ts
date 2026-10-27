@@ -10,6 +10,7 @@ import {
   predictSafe,
   resolveChainTarget,
 } from "@/lib/services/safe-deployment";
+import { createProfile, pinRecipe, resolvePinnedTarget } from "@/lib/services/safe-profile";
 import { buildSafeConfig, deriveSaltNonce } from "@/lib/services/signer-configuration";
 
 const run = process.env.RUN_NETWORK_TESTS === "1";
@@ -55,4 +56,16 @@ describe.runIf(run)("live Safe prediction (Sepolia + Chiado + Base Sepolia)", ()
     expect((await negotiateSafeVersion([SEPOLIA], getPublicClient)).commonVersion).toBe("1.4.1");
     expect((await negotiateSafeVersion([SEPOLIA, BASE_SEPOLIA], getPublicClient)).commonVersion).toBe("1.4.1");
   }, 60_000);
+
+  it("pins a recipe whose offline address matches Protocol Kit, and resolves it on every testnet", async () => {
+    const pin = await pinRecipe(getPublicClient(SEPOLIA), SEPOLIA, config, "1.3.0");
+    const sdk = await predictSafe(CHIADO, getPublicClient(CHIADO), config, "1.3.0", (await negotiateSafeVersion([CHIADO], getPublicClient)).perChain[CHIADO]!.contracts!);
+    expect(pin.address).toBe(sdk.sdkAddress);
+    const profile = createProfile({ source: config.owners[0]!, environment: "testnet", config, recipe: pin.recipe, status: "proposed" });
+    for (const id of TESTNETS) {
+      const t = await resolvePinnedTarget(id, getPublicClient(id), profile);
+      expect(t.issues).toEqual([]);
+      expect(t.predictedAddress).toBe(pin.address);
+    }
+  }, 90_000);
 });

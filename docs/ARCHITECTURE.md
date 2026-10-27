@@ -48,7 +48,14 @@ and (5) prove — by reading the chain — what actually happened.
 | TransactionCapabilityService | `src/lib/services/transaction-capability.ts` | `wallet_getCapabilities`, `wallet_sendCalls`, `wallet_getCallsStatus` parsing. |
 | MigrationPlanningService | `src/lib/services/migration-planning.ts` | Builds deterministic actions per chain, confirmation counts, blockers. |
 | AssetTransferService | `src/lib/services/asset-transfer.ts` | Encodes + simulates native/ERC-20/721/1155 transfers; post-transfer verification. |
-| MigrationExecutionService | `src/lib/services/migration-execution.ts` | Runs the plan, handles rejection/failure, reconciliation and resume. |
+| MigrationExecutionService | `src/lib/services/migration-execution.ts` | Runs the plan, handles rejection/failure, reconciliation and resume. Checks owner readiness per chain and destination governance before transfers. |
+| SafeProfileService (v1.5) | `src/lib/services/safe-profile.ts`, `src/lib/domain/profile.ts`, `src/lib/state/profile-store.ts` | Saved Safes: pinned deployment recipe + commitment, pinned per-chain resolution, legacy recovery, export/import, run linking. |
+| OwnerInviteService (v1.5) | `src/lib/services/owner-invites.ts`, `owner-readiness.ts` | EIP-712 v2 owner acknowledgements, invitation links/files, signed-response import with a local nonce registry, execution-time re-verification per proof chain. |
+| ReceiptService (v1.5) | `src/lib/services/receipt.ts`, `receipt-pdf.ts` | Canonical receipt model, canonical JSON + SHA-256 commitment, PDF rendering, offline inspection. |
+| ChainExtensionService (v1.5) | `src/lib/services/chain-extension.ts` | "Add network" assessment from the pinned recipe; governance-divergence blocking. |
+| LateArrivalService (v1.5) | `src/lib/services/late-arrivals.ts` | Watch state per saved Safe: handled baselines, new/increased assets, scan folding that never treats failure as "gone". |
+| ReadinessService (v1.5) | `src/lib/services/readiness.ts` | Observed/acknowledged/unknown readiness checks; outgoing Safe transaction evidence. |
+| Protocol adapters (v1.5) | `src/lib/services/protocols/*` | Adapter interface; Aave v3 supply-position beta (disabled by default). |
 
 ## Key design decisions
 
@@ -118,6 +125,19 @@ but start unticked, and suspicious assets are collapsed behind a "Review" toggle
 `safe-migrator:v1:testnet-assets:<account>` and adds them to the draft's manual imports so discovery
 re-reads them. The page is only linked when the environment is testnet.
 
+### 9. Saved Safes and the migration workspace (v1.5)
+A `SafeProfile` is the durable identity; a `Migration` is one run linked to it by `profileId` and
+`deploymentCommitment`. The profile's recipe is pinned when the configuration is frozen for owner
+verification or a run starts, and from then on every network is resolved from the recipe alone
+(`resolvePinnedTarget`): no negotiation, and RPC failures are reported as unknown instead of
+"incompatible". Governance is tracked per network as observations (`GovernanceSnapshot`); a Safe
+whose owners changed is `deployed_governance_changed`, sending to it needs explicit acceptance of the
+observed state (stored as `expectedGovernance` and re-checked by the executor), and deploying the
+recipe on a new network is blocked while any known deployment diverges or cannot be read. Profile
+updates from concurrent async work go through `updateProfile(id, fn)`, which applies `fn` to the
+latest stored profile. Everything is in `localStorage`; nothing about profiles, invitations or
+receipts leaves the browser except files the user downloads.
+
 ## Test layers
 
 | Layer | Location | What it proves |
@@ -126,6 +146,7 @@ re-reads them. The page is only linked when the environment is testnet.
 | Live read-only | `tests/integration/safe-prediction.test.ts` (`npm run test:network`) | Canonical contracts, version negotiation and address parity on real Sepolia, Chiado and Base Sepolia |
 | Fork end to end | `tests/integration/fork-migration.test.ts` (`npm run test:fork`) | The production planning and executor path deploys real Safes and moves real tokens on forked chains |
 | UI | `tests/e2e` (`npm run test:e2e`) | Screens render and connect with real RPC reads; the RPC proxy refuses broadcasts |
+| Local canonical chains | `scripts/local-chain.sh` (`npm run test:local`, `npm run test:e2e:local`) | Real EVM and the canonical Safe v1.3.0 bytecode at canonical addresses on empty Hardhat chains (no public RPC): the fork scenarios, saved-Safe workflows, two-device verification and the full UI flow. Not live-network state. |
 
 ## Directory layout
 

@@ -1,16 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { LogOut, FlaskConical } from "lucide-react";
+import { LogOut, FlaskConical, Vault } from "lucide-react";
 import { useConnection, useDisconnect } from "wagmi";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { shortAddress } from "@/lib/utils";
+import { cn, shortAddress } from "@/lib/utils";
 import { useAppState } from "./app-state";
 import { AppWordmark, Stepper } from "./shared";
 
 export function AppHeader() {
-  const { step, source, draft, pinSource } = useAppState();
+  const { step, source, draft, pinSource, setStep, profiles, migration } = useAppState();
+  const runActive = migration?.runState === "running";
   const { address } = useConnection();
   const { mutate: disconnect } = useDisconnect();
   const mismatch = source && address && source.toLowerCase() !== address.toLowerCase();
@@ -26,6 +27,22 @@ export function AppHeader() {
         </div>
         <Stepper step={step} />
         <div className="flex items-center gap-1 rounded-2xl bg-card p-1 shadow-card">
+          {source && (
+            <button
+              type="button"
+              onClick={() => setStep("safe")}
+              disabled={runActive}
+              aria-label="Saved Safes"
+              title="Saved Safes"
+              className={cn(
+                "inline-flex h-8 items-center gap-1.5 rounded-xl px-3 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40",
+                step === "safe" && "bg-muted text-foreground",
+              )}
+            >
+              <Vault className="size-4" /> <span className="hidden 2xl:inline">Saved Safes</span>
+              {profiles.length > 0 && <span className="rounded-md bg-muted px-1.5 text-xs">{profiles.filter((p) => p.environment === draft.environment).length}</span>}
+            </button>
+          )}
           {draft.environment === "testnet" && (
             <Link
               href="/testnet"
@@ -59,7 +76,7 @@ export function AppHeader() {
       {mismatch && signerSlot && (
         <div className="bg-labs-accent px-4 py-2 text-center text-xs font-medium text-safe-black">
           Connected as Signer {signerSlot.slot + 1} ({signerSlot.label || shortAddress(address)}).{" "}
-          {step === "signers" ? "Use “Verify control” on its card to sign the ownership message" : "Go to the Signers step to verify this owner"}, then switch your wallet back to the
+          {step === "signers" ? "Use “Sign here” under Verify owners to sign the ownership acknowledgement" : "Go to the Signers step to verify this owner"}, then switch your wallet back to the
           source {shortAddress(source)}. Migration transactions are only sent from the source.
         </div>
       )}

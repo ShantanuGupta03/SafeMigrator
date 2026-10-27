@@ -4,7 +4,7 @@
 >
 > Safe Migrator is an **independent proof-of-concept**. It is **not affiliated with, endorsed by, or maintained by Safe{Wallet}, Safe Labs, or any Safe product team**. It has **not** been security-audited, is **not** running in production as an official service, and **production-network execution is off by default**. Automated tests and local forks do not replace a formal audit or mainnet validation. Use **testnets** for demos unless you explicitly enable mainnet and accept the risks in [docs/SECURITY.md](docs/SECURITY.md).
 
-**Move the assets in an existing wallet (EOA) into a multi-signature Safe (2-of-3 by default) on several EVM networks, from one guided flow.**
+**Move the assets in an existing wallet (EOA) into a multi-signature Safe (2-of-3 by default) on several EVM networks, from one guided flow — then keep using it as a workspace: set the multisig up together, add networks, and return whenever more assets arrive.**
 
 Safe Migrator connects your wallet and discovers what it holds on each supported network. It then
 helps you choose the owners and threshold, predicts the Safe address (the same address on every compatible
@@ -28,7 +28,38 @@ changes so the README stays accurate.
 
 ## Status
 
-### Implemented and tested
+### New in v1.5 (migration workspace)
+
+Details, decisions and evidence: [docs/V1_5_IMPLEMENTATION.md](docs/V1_5_IMPLEMENTATION.md).
+
+* **Saved Safes.** Each Safe keeps a pinned, versioned *deployment recipe* (version, factory,
+  singleton, fallback handler, exact initializer, salt, proxy creation code) with a commitment hash.
+  Later runs, sweeps and new networks reuse it verbatim; the Safe version is never renegotiated and an
+  unreachable network can no longer change the address. Profiles are stored locally, validated on
+  load, and can be exported/imported (tampered files are rejected). Pre-v1.5 records become
+  "needs recovery" profiles that are only upgraded after the recipe is re-derived from chain state.
+* **Remote co-owner verification.** Freeze the configuration, send each co-owner an invitation link
+  (or QR / file). They review the full owner list and recomputed Safe address on their own device,
+  sign an EIP-712 acknowledgement (no transaction, no funds) and send the signed response back to
+  paste in. No server relays anything; nonces, expiry, revocation and configuration changes are
+  enforced locally. Proofs are re-checked at execution on the network they were signed on.
+* **Versioned receipts.** One canonical receipt model for JSON, PDF and an offline inspector
+  (`/receipt`), with a SHA-256 integrity commitment over canonical JSON. Historical facts and later
+  live re-reads are kept apart; partial and uncertain runs are labelled as such.
+* **Add network.** Deploy a saved Safe on another network at the same address, or record a matching
+  Safe already there. Blocked whenever governance changed on a known network (the recipe would
+  install the original owners) or a network cannot be read.
+* **Late arrivals and sweeps.** "Check for new assets" (plus a rescan on return and optional polling
+  while the tab is visible) lists new or meaningfully increased holdings; a sweep is a new, fully
+  reviewed run into the saved Safe, with no redeployment where the Safe exists.
+* **Safe readiness.** Observed-vs-acknowledged checks: deployment and settings per network, owners
+  with proven key control against the current threshold, gas in the Safe, and an outgoing
+  threshold-signed Safe transaction (accepted only from the Safe's own `ExecutionSuccess` event).
+* **Aave v3 supply positions (beta, disabled by default).** Registry-verified aTokens of a debt-free
+  source can be moved as plain transfers. Not enabled until `npm run test:fork:aave` has passed; it
+  has not been run yet.
+
+### Implemented and tested (v1)
 * **Wallet connection** through EIP-6963 injected wallets (MetaMask, Rabby, Coinbase Wallet, Frame, …)
   and, optionally, WalletConnect. The app detects a plain EOA, an EIP-7702-delegated EOA, or a contract wallet.
 * **Multichain discovery.** Native balances come from RPC. ERC-20, ERC-721 and ERC-1155 holdings come
@@ -111,6 +142,9 @@ methods. See [.env.example](.env.example) for every option.
 | `npm test` | Vitest unit tests (offline) |
 | `npm run test:network` | Read-only checks against live Sepolia, Chiado and Base Sepolia (version negotiation, address parity) |
 | `npm run test:fork` | **End-to-end migration on local forks of Sepolia + Chiado** (see below) |
+| `npm run test:fork:aave` | Aave v3 beta against the real Sepolia Aave deployment on a fork (required before enabling the beta) |
+| `npm run test:local` | Fork suite + saved-Safe scenarios on **local Hardhat chains seeded with the canonical Safe v1.3.0 bytecode** (no public RPC needed) |
+| `npm run test:e2e:local` | All Playwright tests, including two-browser owner verification and the full workspace flow, against those local chains |
 | `npm run test:e2e` | Playwright UI smoke tests (run `npm run build` and `npx playwright install chromium` first) |
 | `npm run compile:contracts` | Recompiles the testnet sample contracts into `src/lib/testnet/artifacts.json` |
 | `node scripts/screenshots.mjs` | Regenerates `docs/screenshots/*` against a server on port 3100 |
@@ -131,12 +165,15 @@ The full walkthrough is in [docs/TESTNET_GUIDE.md](docs/TESTNET_GUIDE.md). In sh
 
 | Layer | How | Real or mocked |
 | --- | --- | --- |
-| Math, validation, classification, planning, state machine, deployment-calldata inspection, EIP-712 challenges | `npm test` (115 tests) | Pure logic. Signatures are real (viem accounts). |
+| Math, validation, classification, planning, state machine, deployment-calldata inspection, EIP-712 challenges | `npm test` (179 tests in v1.5) | Pure logic. Signatures are real (viem accounts). |
 | Executor control flow (rejection, retry, resume, dropped transactions, deploy-in-batch, batch revert, batching fallback, gating) | `npm test` | Wallet and chain **mocked** |
 | EIP-5792 capability and status parsing | `npm test` | Wallet responses **mocked** |
 | Canonical contracts, version negotiation, same address on Sepolia, Chiado and Base Sepolia | `npm run test:network` | **Live** testnet reads |
 | Full migration: discovery → plan → Protocol Kit deployment → transfers → onchain verification, on both chains | `npm run test:fork` (6 scenarios) | **Real EVM execution on local forks** with the real Safe contracts and throwaway keys |
 | UI flows (connect, discover, testnet page, RPC proxy rejects broadcasts) | `npm run test:e2e` | Real server and real RPC reads; read-only injected wallet |
+| v1.5 profiles, invites, receipts (hash vectors), late arrivals, readiness, Aave decisions | `npm test` | Pure logic, real signatures; chain reads mocked where stated |
+| Add network, sweeps, divergence blocking, outgoing-tx evidence, the original fork scenarios | `npm run test:local` | **Real EVM + real Safe bytecode on local chains**, not live-network state |
+| Two-device owner verification; migrate → receipts → saved Safe → sweep → add network in the real UI | `npm run test:e2e:local` | Real UI and local chains; mock wallets backed by throwaway keys |
 
 The fork suite covers the following scenarios:
 * The same Safe address is deployed on both chains, with owners and threshold verified.
@@ -149,8 +186,10 @@ The fork suite covers the following scenarios:
 * One EIP-7702 batch deploys a **3-of-5** Safe and moves an ERC-20, three ERC-721s and an ERC-1155
   collection; the native remainder follows as one transaction.
 
-A one-by-one migration has been run on public Sepolia through a real browser wallet. Not yet done:
-an atomic batch through a real wallet's EIP-5792 implementation.
+Reported by the project owner (no hashes attached, so not independently verified here): successful
+public-testnet migrations across Sepolia + Chiado and Sepolia + Base Sepolia + Chiado. Not yet done:
+an atomic batch through a real wallet's EIP-5792 implementation, and any v1.5 workspace feature on
+public testnets with a real wallet (see the v1.5 checklist in [docs/POC_VALIDATION.md](docs/POC_VALIDATION.md)).
 
 ---
 
@@ -163,19 +202,23 @@ an atomic batch through a real wallet's EIP-5792 implementation.
 * [docs/TESTNET_GUIDE.md](docs/TESTNET_GUIDE.md): faucets, sample assets and demo scenarios
 * [docs/MILESTONES.md](docs/MILESTONES.md): milestone status
 * [docs/POC_REVIEW.md](docs/POC_REVIEW.md): PoC hardening findings and fix status
-* [docs/POC_VALIDATION.md](docs/POC_VALIDATION.md): manual real-wallet validation checklist
+* [docs/POC_VALIDATION.md](docs/POC_VALIDATION.md): manual real-wallet validation checklist and evidence template
+* [docs/V1_5_IMPLEMENTATION.md](docs/V1_5_IMPLEMENTATION.md): v1.5 design decisions, evidence and remaining work
 
 ## Repository layout
 
 ```
-src/app/                 Pages (/, /testnet) and API routes (/api/rpc/[chainId], /api/discovery)
+src/app/                 Pages (/, /testnet, /invite, /receipt) and API routes (/api/rpc/[chainId], /api/discovery)
 src/components/          Screens, state provider, hooks, UI primitives
 src/lib/chains/          Network registry, execution gating, RPC policy, clients
 src/lib/domain/          Types and BigInt amount math
-src/lib/services/        Discovery, signers, deployment, gas, capabilities, planning, transfer, execution, verification
+src/lib/services/        Discovery, signers, deployment, gas, capabilities, planning, transfer, execution, verification,
+                         saved profiles, owner invites, receipts (+PDF), chain extension, late arrivals, readiness,
+                         protocol adapters (protocols/)
 src/lib/state/           Migration state machine and local persistence
 contracts/               Testnet-only sample assets (never for mainnet)
-tests/unit|integration|e2e
+scripts/local-chain*     Local Hardhat chains seeded with the canonical Safe v1.3.0 bytecode (test harness)
+tests/unit|integration|e2e|fixtures
 ```
 
 ## License

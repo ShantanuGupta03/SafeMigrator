@@ -67,6 +67,12 @@ export function canonicalContracts(version: SupportedSafeVersion): Record<Contra
   return out;
 }
 
+/** Canonical addresses of every contract of a Safe version (no onchain check). */
+export function canonicalContractSet(version: SupportedSafeVersion): SafeContractSet {
+  const c = canonicalContracts(version);
+  return Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v.address])) as unknown as SafeContractSet;
+}
+
 export interface VersionCheck {
   version: SupportedSafeVersion;
   ok: boolean;
@@ -96,8 +102,14 @@ export async function verifyCanonicalContracts(client: PublicClient, version: Su
 }
 
 export interface NegotiationResult {
-  /** Version used on every compatible chain (same address). Null if no common version exists. */
+  /** Version used on every compatible chain (same address). Null if no common version exists or the result is indeterminate. */
   commonVersion: SupportedSafeVersion | null;
+  /**
+   * Chains whose RPC could not be read. An unreachable chain is not evidence that a version is
+   * missing there, so while this is non-empty no common version is chosen: picking one from the
+   * reachable subset could change the Safe address once the chain is reachable again.
+   */
+  unavailable: number[];
   perChain: Record<number, { version: SupportedSafeVersion | null; contracts: SafeContractSet | null; issues: string[] }>;
 }
 
@@ -122,9 +134,20 @@ export async function negotiateSafeVersion(
       }
     }),
   );
+  return decideNegotiation(chainIds, checks, rpcErrors, preference);
+}
+
+/** Pure decision step of `negotiateSafeVersion`, separated for testing. */
+export function decideNegotiation(
+  chainIds: readonly number[],
+  checks: ReadonlyMap<number, VersionCheck[]>,
+  rpcErrors: ReadonlyMap<number, string>,
+  preference: readonly SupportedSafeVersion[] = SAFE_VERSION_PREFERENCE,
+): NegotiationResult {
   const reachable = chainIds.filter((id) => checks.has(id));
+  const unavailable = chainIds.filter((id) => rpcErrors.has(id));
   const commonVersion =
-    reachable.length === 0
+    reachable.length === 0 || unavailable.length > 0
       ? null
       : (preference.find((v) => reachable.every((id) => checks.get(id)!.find((c) => c.version === v)?.ok)) ?? null);
 
@@ -136,6 +159,10 @@ export async function negotiateSafeVersion(
       continue;
     }
     const list = checks.get(id)!;
+    if (unavailable.length > 0) {
+      perChain[id] = { version: null, contracts: null, issues: [`Safe version not chosen: could not reach ${unavailable.length} network(s) of this environment, so the shared address cannot be fixed yet.`] };
+      continue;
+    }
     const pick = list.find((c) => c.version === commonVersion && c.ok) ?? list.find((c) => c.ok);
     perChain[id] = pick
       ? {
@@ -148,7 +175,7 @@ export async function negotiateSafeVersion(
         }
       : { version: null, contracts: null, issues: list.flatMap((c) => c.issues) };
   }
-  return { commonVersion, perChain };
+  return { commonVersion, unavailable, perChain };
 }
 
 /* -------------------------------------------------------------------------- */

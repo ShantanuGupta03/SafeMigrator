@@ -1,10 +1,12 @@
-// Local fork node used by `npm run test:fork`. Keeps the real chain ID so registry lookups and
-// chain-ID validation behave exactly as on the live testnet.
+// Local node used by `npm run test:fork` (FORK_URL set: fork of a live testnet) and
+// `npm run test:local` (no FORK_URL: empty chain seeded with the canonical Safe v1.3.0 runtime code).
+// Keeps the real chain ID so registry lookups and chain-ID validation behave as on the live testnet.
 module.exports = {
   networks: {
     hardhat: {
       chainId: Number(process.env.FORK_CHAIN_ID),
-      forking: { url: process.env.FORK_URL },
+      ...(process.env.FORK_URL ? { forking: { url: process.env.FORK_URL } } : {}),
+      accounts: { count: 10, accountsBalance: "1000000000000000000000000" },
       chains: {
         10200: { hardforkHistory: { cancun: 0, prague: 0 } },
         84532: { hardforkHistory: { cancun: 0, prague: 0 } },
