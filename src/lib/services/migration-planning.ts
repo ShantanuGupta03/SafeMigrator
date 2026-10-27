@@ -1,4 +1,4 @@
-import type { Address, PublicClient } from "viem";
+import type { Address, Hex, PublicClient } from "viem";
 import { executionGate, getChain, type ExecutionGate } from "@/lib/chains/registry";
 import { appConfig } from "@/lib/config";
 import { formatAmount, sumBigInt } from "@/lib/domain/amounts";
@@ -7,7 +7,9 @@ import type {
   ChainSafeTarget,
   DiscoveredAsset,
   ExecutionStrategy,
+  ExpectedGovernance,
   Migration,
+  MigrationPurpose,
   MigrationAction,
   MigrationScope,
   OwnerProof,
@@ -154,6 +156,11 @@ export function buildActions(chainId: number, assets: readonly DiscoveredAsset[]
   return out;
 }
 
+/** A deployment is planned only when nothing is at the address; any existing Safe is reused or blocks. */
+export function needsDeploymentFor(target: Pick<ChainSafeTarget, "status"> | undefined): boolean {
+  return target?.status === "not_deployed";
+}
+
 /* -------------------------------- Preflight -------------------------------- */
 
 export interface ActionEstimate {
@@ -200,7 +207,7 @@ export async function preflightChain(params: {
   };
   if (!target.predictedAddress || !target.safeVersion || !target.contracts) return pre;
   const safe = target.predictedAddress;
-  const safeDeployed = target.status === "deployed_matching";
+  const safeDeployed = target.status === "deployed_matching" || target.status === "deployed_governance_changed";
 
   try {
     const [balance, fee, latestNonce, pendingNonce] = await Promise.all([
@@ -293,7 +300,15 @@ export interface ChainPlan {
 export function assembleChainPlan(
   pre: ChainPreflight,
   actions: MigrationAction[],
-  opts: { verifiedOwnerCount: number; threshold: number; strategyOverride?: ExecutionStrategy; walletChainId?: number; dustMultiple?: number },
+  opts: {
+    verifiedOwnerCount: number;
+    threshold: number;
+    strategyOverride?: ExecutionStrategy;
+    walletChainId?: number;
+    dustMultiple?: number;
+    /** The user reviewed and accepted the Safe's changed governance on this chain (sweeps into an existing Safe). */
+    governanceAccepted?: boolean;
+  },
 ): ChainPlan {
   const chain = getChain(pre.chainId);
   const blockers: string[] = [];
@@ -305,7 +320,12 @@ export function assembleChainPlan(
     blockers.push(`Production networks require ${opts.threshold} owners verified by signature (${opts.verifiedOwnerCount} verified).`);
   }
   if (t.status === "incompatible") blockers.push(`No compatible Safe deployment: ${t.issues.join(" ")}`);
-  if (t.status === "error") blockers.push(`Safe address could not be verified: ${t.issues.join(" ")}`);
+  if (t.status === "error") {
+    blockers.push(t.unavailable ? `Network could not be read, so the Safe's state is unknown: ${t.issues.join(" ")}` : `Safe address could not be verified: ${t.issues.join(" ")}`);
+  }
+  if (t.status === "deployed_governance_changed" && !opts.governanceAccepted) {
+    blockers.push(`The Safe's owners or security settings changed since it was deployed: ${t.issues.join(" ")} Review the current governance before sending assets.`);
+  }
   if (t.status === "deployed_mismatch") {
     blockers.push(`A contract already exists at the predicted address with a different configuration: ${t.issues.join(" ")}`);
   }
@@ -456,6 +476,11 @@ export function createMigration(params: {
   ownerVerificationWaived?: boolean;
   scope?: MigrationScope | null;
   plans: ChainPlan[];
+  profileId?: string | null;
+  deploymentCommitment?: Hex | null;
+  purpose?: MigrationPurpose;
+  /** Reviewed governance per chain, for existing Safes whose owners or settings changed. */
+  expectedGovernance?: Record<number, ExpectedGovernance>;
 }): Migration {
   const chains: ChainMigration[] = params.plans
     .filter((p) => p.executable && p.safeAddress && p.safeVersion && p.contracts)
@@ -470,6 +495,7 @@ export function createMigration(params: {
       actions: withPreviewAmounts(p.actions),
       batches: [],
       safeVerification: null,
+      expectedGovernance: params.expectedGovernance?.[p.chainId] ?? null,
     }));
   const now = Date.now();
   return {
@@ -487,5 +513,8 @@ export function createMigration(params: {
     chains,
     runState: "idle",
     log: [],
+    profileId: params.profileId ?? null,
+    deploymentCommitment: params.deploymentCommitment ?? null,
+    purpose: params.purpose ?? "migration",
   };
 }

@@ -8,7 +8,7 @@ import {
   safeAbi,
   SENTINEL_ADDRESS,
 } from "@/lib/abis";
-import type { SafeConfig, SafeContractSet, SafeInspection } from "@/lib/domain/types";
+import type { ExpectedGovernance, SafeConfig, SafeContractSet, SafeInspection } from "@/lib/domain/types";
 
 function slotToAddress(slot: Hex | undefined): Address | null {
   if (!slot || slot === "0x") return null;
@@ -33,6 +33,10 @@ export async function inspectSafe(client: PublicClient, address: Address, blockN
     modules: [],
     nonce: null,
     blockNumber: block.toString(),
+    blockHash: await client
+      .getBlock({ blockNumber: block })
+      .then((b) => b.hash ?? null)
+      .catch(() => null),
   };
   if (!base.hasCode) return base;
 
@@ -98,6 +102,25 @@ export function compareSafeToConfig(
   if (!inspection.fallbackHandler || inspection.fallbackHandler.toLowerCase() !== contracts.fallbackHandler.toLowerCase()) {
     issues.push(`Unexpected fallback handler ${inspection.fallbackHandler ?? "none"}.`);
   }
+  return issues;
+}
+
+/**
+ * Compares a live Safe with governance the user reviewed (an existing Safe whose owners or settings
+ * changed after deployment). Every field must still be exactly what was reviewed.
+ */
+export function compareSafeToGovernance(inspection: SafeInspection, expected: ExpectedGovernance): string[] {
+  if (!inspection.hasCode) return ["No contract code at the Safe address."];
+  if (!inspection.isSafe) return ["A contract exists at this address but it is not a Safe."];
+  const issues: string[] = [];
+  const lower = (xs: readonly string[]) => xs.map((x) => x.toLowerCase()).sort().join(",");
+  const same = (a: string | null, b: string | null) => (a ?? zeroAddress).toLowerCase() === (b ?? zeroAddress).toLowerCase();
+  if (lower(inspection.owners) !== lower(expected.owners)) issues.push(`Owners changed since review: onchain ${inspection.owners.join(", ")}.`);
+  if (inspection.threshold !== expected.threshold) issues.push(`Threshold is ${inspection.threshold}, reviewed ${expected.threshold}.`);
+  if (!same(inspection.singleton, expected.singleton)) issues.push(`Singleton changed since review: ${inspection.singleton ?? "none"}.`);
+  if (!same(inspection.fallbackHandler, expected.fallbackHandler)) issues.push(`Fallback handler changed since review: ${inspection.fallbackHandler ?? "none"}.`);
+  if (!same(inspection.guard, expected.guard)) issues.push(`Guard changed since review: ${inspection.guard ?? "none"}.`);
+  if (lower(inspection.modules) !== lower(expected.modules)) issues.push(`Modules changed since review: ${inspection.modules.join(", ") || "none"}.`);
   return issues;
 }
 

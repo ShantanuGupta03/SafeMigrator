@@ -130,3 +130,28 @@ export function ScreenHeading({ title, subtitle }: { title: string; subtitle?: R
     </div>
   );
 }
+
+/** Saves text as a file in the browser. Nothing leaves the device. */
+export function downloadFile(filename: string, content: string | Uint8Array, type = "application/json") {
+  const blob = new Blob([content as BlobPart], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Reads a user-chosen file as text, refusing anything larger than `maxBytes`. */
+export async function readFileText(file: File, maxBytes: number): Promise<string> {
+  if (file.size > maxBytes) throw new Error(`File is larger than ${Math.round(maxBytes / 1024)} KB.`);
+  return file.text();
+}
+
+export function timeAgo(ts: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round((now - ts) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}

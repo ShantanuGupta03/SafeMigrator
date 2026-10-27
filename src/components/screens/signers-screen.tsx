@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowLeft, ArrowRight, BadgeCheck, Cpu, KeyRound, Loader2, Plus, Smartphone, UserRound, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { Address } from "viem";
 import { useConfig, useConnection } from "wagmi";
 import { getChainId, signTypedData } from "wagmi/actions";
@@ -157,8 +157,9 @@ export function SignersScreen() {
                 min={0}
                 className="w-24"
                 value={draft.saltVariant}
-                onChange={(e) => setDraft((d) => ({ ...d, saltVariant: Math.max(0, Math.floor(Number(e.target.value) || 0)) }))}
+                onChange={(e) => setDraft((d) => ({ ...d, saltNonce: null, saltVariant: Math.max(0, Math.floor(Number(e.target.value) || 0)) }))}
               />
+              {draft.saltNonce && <Badge variant="outline">Salt from saved Safe</Badge>}
               {config && <span className="font-mono text-xs text-muted-foreground">saltNonce {config.saltNonce.slice(0, 12)}…</span>}
             </div>
           </details>
@@ -482,11 +483,13 @@ export function TargetStatus({ t }: { t: ChainSafeTarget }) {
       return <Badge variant="outline">Will be deployed</Badge>;
     case "deployed_matching":
       return <Badge variant="success">Already deployed · config verified</Badge>;
+    case "deployed_governance_changed":
+      return <Badge variant="warning">Deployed · governance changed</Badge>;
     case "deployed_mismatch":
       return <Badge variant="danger">Conflicting contract</Badge>;
     case "incompatible":
       return <Badge variant="danger">Incompatible network</Badge>;
     default:
-      return <Badge variant="danger">Verification error</Badge>;
+      return <Badge variant="danger">{t.unavailable ? "Network unreachable" : "Verification error"}</Badge>;
   }
 }

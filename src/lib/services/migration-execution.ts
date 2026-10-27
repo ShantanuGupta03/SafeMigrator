@@ -1,6 +1,6 @@
 import type { Address, Hex, PublicClient, TransactionReceipt } from "viem";
 import { executionGate, getChain } from "@/lib/chains/registry";
-import type { ActionError, ChainMigration, ChainPhase, Migration, MigrationAction } from "@/lib/domain/types";
+import type { ActionError, ChainMigration, ChainPhase, Migration, MigrationAction, SafeInspection } from "@/lib/domain/types";
 import { chainOutcome, SUCCESS_STATUSES, type MigrationEvent } from "@/lib/state/machine";
 import {
   amountsMateriallyChanged,
@@ -14,7 +14,7 @@ import {
 import { validateMigrationOwnerProofs } from "./owner-readiness";
 import { classifySubmissionError } from "./submission-errors";
 import { estimateCallGas, estimateL1DataFee, getFeeQuote, isDust, maxCost, spendableNative, type FeeQuote } from "./gas-estimation";
-import { compareSafeToConfig, inspectSafe } from "./onchain-verification";
+import { compareSafeToConfig, compareSafeToGovernance, inspectSafe } from "./onchain-verification";
 import { buildDeploymentTransaction, deploymentTargetAddress } from "./safe-deployment";
 import {
   sendAtomicBatch,
@@ -69,6 +69,15 @@ export class HaltRun extends Error {
 class ReceiptTimeout extends Error {}
 
 /* -------------------------------- Helpers --------------------------------- */
+
+/**
+ * Checks an already deployed Safe before assets go into it: the original configuration, or the
+ * exact governance the user reviewed when the Safe's owners or settings changed after deployment.
+ * A Safe deployed by this run is always checked against the original configuration instead.
+ */
+function destinationIssues(insp: SafeInspection, m: Migration, c: ChainMigration): string[] {
+  return c.expectedGovernance ? compareSafeToGovernance(insp, c.expectedGovernance) : compareSafeToConfig(insp, m.safeConfig, c.contracts);
+}
 
 function chainOf(deps: ExecutorDeps, chainId: number): ChainMigration {
   const c = deps.getMigration().chains.find((x) => x.chainId === chainId);
@@ -474,7 +483,7 @@ async function runDeployment(deps: ExecutorDeps, chainId: number): Promise<boole
 
   const insp = await inspectSafe(client, c.safeAddress);
   if (insp.hasCode) {
-    const issues = compareSafeToConfig(insp, m.safeConfig, c.contracts);
+    const issues = destinationIssues(insp, m, c);
     deps.dispatch({ type: "CHAIN_PATCH", chainId, patch: { safeVerification: insp } });
     if (issues.length) {
       if (deploy.status === "planned" || deploy.status === "skipped") {
@@ -508,6 +517,10 @@ async function runDeployment(deps: ExecutorDeps, chainId: number): Promise<boole
   let fee: FeeQuote;
   try {
     tx = await buildDeploymentTransaction(chainId, client, m.safeConfig, c.safeVersion, c.contracts);
+    const target = await deploymentTargetAddress(client, tx);
+    if (target.toLowerCase() !== c.safeAddress.toLowerCase()) {
+      throw new Error(`Deployment would create ${target}, not the verified Safe address ${c.safeAddress}.`);
+    }
     fee = await getFeeQuote(client);
     gas = await estimateCallGas(client, m.source, tx);
   } catch (e) {
@@ -928,7 +941,7 @@ export async function runChain(deps: ExecutorDeps, chainId: number): Promise<voi
   const client = deps.clientFor(chainId);
   const c = chainOf(deps, chainId);
   const insp = await inspectSafe(client, c.safeAddress);
-  const issues = compareSafeToConfig(insp, m.safeConfig, c.contracts);
+  const issues = destinationIssues(insp, m, c);
   deps.dispatch({ type: "CHAIN_PATCH", chainId, patch: { safeVerification: insp } });
   if (issues.length) {
     phase(deps, chainId, "failed", `Safe verification failed; transfers blocked: ${issues.join(" ")}`);
