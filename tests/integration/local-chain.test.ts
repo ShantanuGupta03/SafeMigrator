@@ -190,3 +190,65 @@ describe.runIf(run)("saved Safe: add network (local canonical chains)", () => {
     expect((await resolvePinnedTarget(CHIADO, clientFor(CHIADO), forged)).status).toBe("error");
   }, 60_000);
 });
+
+describe.runIf(run)("saved Safe: late arrivals and sweeps (local canonical chains)", () => {
+  it("detects new assets after a run, survives reload, sweeps them without redeploying, then settles", async () => {
+    const { source, profile } = await freshProfile();
+    let p = await deployOnly(profile, SEPOLIA, source);
+    const client = clientFor(SEPOLIA);
+
+    // Assets arrive at the source after the first run.
+    const art = (await import("@/lib/testnet/artifacts.json")).default.artifacts;
+    const w = createWalletClient({ account: source, chain: getChain(SEPOLIA).viemChain, transport: http(RPC[SEPOLIA]) });
+    const deploy = async (name: "SampleToken" | "SampleNFT", args: readonly unknown[]) => {
+      const hash = await w.deployContract({ abi: art[name].abi as never, bytecode: art[name].bytecode as Hex, args: args as never });
+      return getAddress((await client.waitForTransactionReceipt({ hash })).contractAddress!);
+    };
+    const token = await deploy("SampleToken", ["Late Token", "LATE", 18, 10n ** 21n]);
+    const nft = await deploy("SampleNFT", ["Late NFT", "LNFT", false, 1n]);
+    const imports = [
+      { chainId: SEPOLIA, standard: "erc20" as const, contract: token, tokenId: null },
+      { chainId: SEPOLIA, standard: "erc721" as const, contract: nft, tokenId: "1" },
+    ];
+    const { discoverNetwork } = await import("@/lib/services/discovery/asset-discovery");
+    const { applyScan, ignoreArrival } = await import("@/lib/services/late-arrivals");
+    const scan1 = await discoverNetwork({ chainId: SEPOLIA, owner: source.address, client, manualImports: imports });
+    const s1 = applyScan(p.watch, { [SEPOLIA]: scan1 });
+    p = { ...p, manualImports: imports, watch: s1.watch };
+    const ids = s1.watch.pending.map((x) => x.assetId);
+    expect(ids).toEqual(expect.arrayContaining([`${SEPOLIA}:erc20:${token.toLowerCase()}`, `${SEPOLIA}:erc721:${nft.toLowerCase()}:1`]));
+
+    // Reload: pending items persist; an unreachable network does not clear them.
+    const store = memoryStore();
+    saveProfiles(store, source.address, [p]);
+    p = loadProfiles(store, source.address).profiles[0]!;
+    const dead = createPublicClient({ chain: getChain(SEPOLIA).viemChain, transport: http("http://127.0.0.1:9") }) as PublicClient;
+    const failed = await discoverNetwork({ chainId: SEPOLIA, owner: source.address, client: dead, manualImports: imports });
+    expect(failed.status).toBe("error");
+    p = { ...p, watch: applyScan(p.watch, { [SEPOLIA]: failed }).watch };
+    expect(p.watch.pending.map((x) => x.assetId).sort()).toEqual([...ids].sort());
+
+    // Ignore the native top-up if any; sweep the token and the NFT through the normal path.
+    for (const x of p.watch.pending.filter((x) => x.standard === "native")) p = { ...p, watch: ignoreArrival(p.watch, x) };
+    const selected = scan1.assets.filter((a) => a.standard === "erc20" || a.standard === "erc721");
+    const target = await resolvePinnedTarget(SEPOLIA, client, p);
+    expect(target.status).toBe("deployed_matching");
+    const actions = buildActions(SEPOLIA, selected, needsDeploymentFor(target));
+    const pre = await preflightChain({ client, source: source.address, config: p.original, target, actions, capability: undefined });
+    const plan = assembleChainPlan(pre, actions, { verifiedOwnerCount: 0, threshold: 2, walletChainId: SEPOLIA });
+    expect(plan.blockers).toEqual([]);
+    expect(plan.needsDeployment).toBe(false);
+    const wallet = walletFor(source);
+    const m = createMigration({ id: `sweep-${Date.now()}`, source: source.address, environment: "testnet", safeConfig: p.original, verifiedOwners: [], plans: [plan], profileId: p.id, deploymentCommitment: p.commitment, purpose: "sweep" });
+    const done = await execute(m, wallet);
+    expect(done.chains.map(chainOutcome)).toEqual(["completed"]);
+    expect(wallet.sent.some((r) => r.to.toLowerCase() === p.recipe!.factory.toLowerCase())).toBe(false);
+    expect(wallet.sent).toHaveLength(2);
+    expect(await client.readContract({ address: nft, abi: (await import("viem")).erc721Abi, functionName: "ownerOf", args: [1n] })).toBe(p.safeAddress);
+
+    // After the run, the swept assets are handled and the next check is quiet.
+    p = syncProfileWithMigration(p, done);
+    const after = applyScan(p.watch, { [SEPOLIA]: await discoverNetwork({ chainId: SEPOLIA, owner: source.address, client, manualImports: imports }) });
+    expect(after.watch.pending.filter((x) => x.standard !== "native")).toEqual([]);
+  }, 180_000);
+});

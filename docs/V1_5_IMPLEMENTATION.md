@@ -170,3 +170,28 @@ attached, so they are recorded as user-reported runs only.
   Base Sepolia; divergence (threshold changed via storage) blocks; conflicting contract blocks;
   network without the pinned singleton is `incompatible` with no renegotiation; tampered recipe
   rejected.
+
+### Phase 5: late arrivals and reviewed sweeps (done)
+
+* `src/lib/services/late-arrivals.ts` (pure) + `src/components/late-arrivals-panel.tsx`.
+* Identity = discovery asset ID (chain, standard, contract, token ID). A finished linked run records
+  handled assets (`withHandledFromMigration`, called from `syncProfileWithMigration`): migrated items
+  at what stayed behind, native gas dust kept on purpose (`retained`) at the reviewed balance,
+  excluded selections at their amount. They resurface only on a meaningful increase (≥ 5%, and for
+  native ≥ 0.001 of the coin). "Ignore" adds an `ignored` baseline. Suspicious assets are never
+  surfaced (counted as hidden).
+* Scans: `error` changes nothing but the check record; `partial` may add/update but never removes;
+  only `ok` removes items no longer held. Last-checked time and per-network coverage are shown.
+* Triggers: manual "Check for new assets"; a rescan when the Saved Safes page is opened and the last
+  check is older than 10 minutes; optional polling every 15/30/60 minutes only while the tab is
+  visible (stops on hide/unmount, no overlapping scans, at most 24 automatic checks per page
+  session). The UI says plainly that nothing is monitored after the app is closed.
+* "Review sweep" links the draft to the profile, selects the chosen transferable arrivals, rescans
+  them and goes through Portfolio → Signers → Review as a NEW run (`purpose: "sweep"`). Nothing from
+  the check is reused for planning; balances, simulations, governance and owner proofs are evaluated
+  again. Changed governance needs explicit acceptance (Phase 1). No unattended signing exists.
+* Evidence: `tests/unit/late-arrivals.test.ts` (5) and the sweep scenario in
+  `tests/integration/local-chain.test.ts` (new ERC-20 + NFT detected after a run, reload, failed scan
+  keeps them, sweep without redeployment (2 transactions, no factory call), quiet afterwards).
+* Not implemented: vesting/unclaimed entitlements are not detected as arrivals (no protocol
+  integration); closed-browser monitoring and notifications are out of scope.

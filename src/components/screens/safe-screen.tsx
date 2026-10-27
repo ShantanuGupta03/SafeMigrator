@@ -25,6 +25,7 @@ import {
 } from "@/lib/services/safe-profile";
 import { cn } from "@/lib/utils";
 import { AddNetworkPanel } from "../add-network-panel";
+import { LateArrivalsPanel } from "../late-arrivals-panel";
 import { useAppState } from "../app-state";
 import { AddressChip, ChainLabel, downloadFile, readFileText, ScreenHeading, timeAgo, TxLink } from "../shared";
 
@@ -233,6 +234,7 @@ function ProfileCard({ profile: p, active, onUse, onSave }: { profile: SafeProfi
           )}
         </div>
 
+        {pinned && <LateArrivalsPanel profile={p} onSave={onSave} />}
         {pinned && <AddNetworkPanel profile={p} onSave={onSave} />}
 
         <div className="flex flex-wrap items-end gap-2">

@@ -22,6 +22,7 @@ import type {
   SafeInspection,
   SupportedSafeVersion,
 } from "@/lib/domain/types";
+import { withHandledFromMigration } from "./late-arrivals";
 import { compareSafeToConfig, inspectSafe } from "./onchain-verification";
 import {
   canonicalContractSet,
@@ -429,6 +430,10 @@ export function syncProfileWithMigration(p: SafeProfile, m: Migration): SafeProf
         next = withSnapshot(next, snapshotFromInspection(c.chainId, insp, p.original, canonicalContractSet(version)));
       }
     }
+  }
+  if (m.runState === "finished") {
+    const watch = withHandledFromMigration(next.watch, m);
+    if (JSON.stringify(watch) !== JSON.stringify(next.watch)) next = { ...next, watch, updatedAt: Date.now() };
   }
   return next;
 }
