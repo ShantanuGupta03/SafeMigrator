@@ -125,3 +125,26 @@ attached, so they are recorded as user-reported runs only.
 * Tests: `tests/unit/owner-invites.test.ts` (18), `tests/e2e/owner-invite.spec.ts` (two isolated
   browser contexts on local canonical chains: tampered response rejected, verification, idempotent
   re-import, no transaction requested by either wallet).
+
+### Phase 3: receipts, PDF, inspector (done)
+
+* `src/lib/services/receipt.ts`: one canonical, zod-validated model (`safe-migrator/receipt` v1) used by
+  the JSON export, the PDF and the inspector. `record` (historical, frozen) and `currentState`
+  (labelled live re-read at export) are separate; a live re-read never changes `record` (tested).
+  Raw base units (`plannedRaw`, `reviewedRaw`, `verifiedDeltaRaw`, `loggedRaw`, `sourceRemainingRaw`)
+  are kept apart from derived display strings. Missing history is `null`/`unknown`, never inferred.
+  Excluded by design: private labels, raw owner signatures, the debug log.
+* Integrity: `sha256-jcs-v1` = SHA-256 over canonical JSON (sorted keys, no whitespace, safe integers
+  only, `undefined` rejected) of the receipt without `integrity`. Test vectors were computed
+  independently with Python `hashlib`. The inspector hashes the file's own JSON (not a normalized
+  copy), so added fields or a changed letter case are detected.
+* PDF: `src/lib/services/receipt-pdf.ts` (pdf-lib, standard fonts, A4, paginated, outcome banner,
+  exceptions before details, explorer links + QR per network, receipt hash on every page footer).
+  Visually inspected at 70 dpi (single-page partial run; 10-page run with 83 transactions and long
+  reasons). `pypdf` text extraction confirmed the hash, source and every transaction hash in both PDFs
+  match the JSON.
+* `/receipt`: offline inspector (schema + hash), no requests on load (asserted in
+  `tests/e2e/receipt.spec.ts`), optional explicit "Recheck onchain" through the read-only proxy, PDF
+  only for receipts whose hash matches.
+* Build provenance: `NEXT_PUBLIC_BUILD_COMMIT` / `NEXT_PUBLIC_APP_VERSION` injected by `next.config.ts`
+  (unknown stays `null`). `/invite` is served with `Referrer-Policy: no-referrer`.
