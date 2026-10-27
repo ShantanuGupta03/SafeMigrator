@@ -14,6 +14,8 @@
     "test:e2e": "playwright test",
     "test:network": "RUN_NETWORK_TESTS=1 vitest run tests/integration/safe-prediction.test.ts",
     "test:fork": "bash scripts/fork-test.sh",
+    "test:local": "bash scripts/local-chain.sh env RUN_FORK_TESTS=1 RUN_LOCAL_TESTS=1 npx vitest run tests/integration",
+    "test:e2e:local": "bash scripts/local-chain.sh env RPC_RATE_LIMIT_PER_MINUTE=5000 npx playwright test --project=desktop",
     "compile:contracts": "node scripts/compile-test-contracts.mjs"
   },
   "dependencies": {

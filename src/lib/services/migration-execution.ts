@@ -217,7 +217,7 @@ async function reconcileAwaitingWallet(deps: ExecutorDeps, chainId: number, a: M
   const m = deps.getMigration();
   const c = chainOf(deps, chainId);
   const client = deps.clientFor(chainId);
-  const block = await client.getBlockNumber();
+  const block = await client.getBlockNumber({ cacheTime: 0 });
   if (a.kind === "deploy_safe") {
     const insp = await inspectSafe(client, c.safeAddress, block);
     if (insp.hasCode) {
@@ -321,7 +321,7 @@ async function reconcileByEndState(deps: ExecutorDeps, chainId: number, actionId
     patch(deps, chainId, a.id, { status: "needs_attention", error: fail("dropped", `${reason} The Safe is not deployed.`) });
     return;
   }
-  const block = await client.getBlockNumber();
+  const block = await client.getBlockNumber({ cacheTime: 0 });
   patch(deps, chainId, a.id, { status: "verifying" });
   const outcome = await verifyTransfer(client, a, source, safe, block);
   if (outcome.status === "needs_attention") {
@@ -413,7 +413,7 @@ async function applyBatchOutcome(deps: ExecutorDeps, chainId: number, callsId: s
       }
       // Wait for confirmation depth on the last receipt before reading balances.
       const last = receipts[receipts.length - 1];
-      let block = await client.getBlockNumber();
+      let block = await client.getBlockNumber({ cacheTime: 0 });
       if (last) {
         const r = await client.waitForTransactionReceipt({ hash: last.transactionHash, confirmations: getChain(chainId).confirmations, timeout: deps.receiptTimeoutMs ?? 10 * 60_000 });
         block = r.blockNumber;
@@ -914,17 +914,21 @@ export async function runChain(deps: ExecutorDeps, chainId: number): Promise<voi
     phase(deps, chainId, "needs_attention", gate.reason);
     return;
   }
-  if (gate.requiresVerifiedOwners && m.verifiedOwners.length < m.safeConfig.threshold) {
-    const n = m.safeConfig.threshold;
-    phase(deps, chainId, "needs_attention", `Verify control of at least ${n} owner${n > 1 ? "s" : ""} before migrating on this network.`);
-    return;
-  }
 
+  // Reconciling in-flight work is read-only and always allowed; sending anything new needs owner readiness.
   await reconcileChain(deps, chainId);
   if (chainOutcome(chainOf(deps, chainId)) === "completed") {
     phase(deps, chainId, "completed");
     return;
   }
+
+  const readiness = await validateMigrationOwnerProofs(m, deps.clientFor, chainId);
+  if (!readiness.ok) {
+    phase(deps, chainId, "needs_attention", readiness.issues.join(" "));
+    log(deps, chainId, "error", `Owner verification blocks this network: ${readiness.issues.join(" ")}`);
+    return;
+  }
+  if (readiness.issues.length) log(deps, chainId, "warn", `Owner verification notes: ${readiness.issues.join(" ")}`);
 
   if ((await runDeploymentInBatch(deps, chainId)) === "done") {
     settleChain(deps, chainId);
@@ -972,16 +976,6 @@ export async function runChain(deps: ExecutorDeps, chainId: number): Promise<voi
 
 export async function runMigration(deps: ExecutorDeps): Promise<void> {
   deps.dispatch({ type: "RUN_STATE", runState: "running" });
-  const m0 = deps.getMigration();
-  const proofChain = m0.chains[0]?.chainId;
-  if (proofChain) {
-    const readiness = await validateMigrationOwnerProofs(m0, deps.clientFor(proofChain), proofChain);
-    if (!readiness.ok) {
-      log(deps, proofChain, "error", readiness.issues.join(" "));
-      deps.dispatch({ type: "RUN_STATE", runState: "paused" });
-      return;
-    }
-  }
   try {
     for (const c of deps.getMigration().chains) {
       if (deps.shouldStop()) break;

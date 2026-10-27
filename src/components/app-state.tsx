@@ -12,7 +12,8 @@ import { syncProfileWithMigration } from "@/lib/services/safe-profile";
 import { DEFAULT_THRESHOLD } from "@/lib/services/signer-configuration";
 import { chainOutcome, hasInFlightActions, migrationReducer, type MigrationEvent } from "@/lib/state/machine";
 import { archiveMigration, draftKey, loadMigration, loadMigrationHistory, loadTestnetImports, saveMigration, clearMigration } from "@/lib/state/persistence";
-import { loadProfiles, saveProfiles, upsertProfile, withLegacyProfiles, type LoadedProfiles } from "@/lib/state/profile-store";
+import type { OwnerInvite } from "@/lib/services/owner-invites";
+import { loadInvites, loadProfiles, saveInvites, saveProfiles, upsertProfile, withLegacyProfiles, type LoadedProfiles } from "@/lib/state/profile-store";
 
 const importKey = (m: ManualImport) => `${m.chainId}:${m.standard}:${m.contract.toLowerCase()}:${m.tokenId}`;
 
@@ -99,6 +100,9 @@ interface AppStateValue {
   saveProfile(p: SafeProfile, replaces?: string[]): void;
   /** Links the draft to a saved Safe and loads its original owners, threshold and salt. */
   selectProfile(id: string | null): void;
+  /** Owner invitations this workspace issued (local nonce registry). */
+  invites: OwnerInvite[];
+  setInvites(fn: (list: OwnerInvite[]) => OwnerInvite[]): void;
 }
 
 const Ctx = createContext<AppStateValue | null>(null);
@@ -121,6 +125,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [profiles, setProfiles] = useState<SafeProfile[]>([]);
   const [profileIssues, setProfileIssues] = useState<LoadedProfiles["rejected"]>([]);
   const profilesRef = useRef<SafeProfile[]>([]);
+  const [invites, setInvitesState] = useState<OwnerInvite[]>([]);
   const sourceRef = useRef<Address | null>(null);
 
   const commitProfiles = useCallback((next: SafeProfile[]) => {
@@ -166,6 +171,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       sourceRef.current = a;
       setDiscovery({});
       if (!a) {
+        setInvitesState([]);
         profilesRef.current = [];
         setProfiles([]);
         setProfileIssues([]);
@@ -179,6 +185,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       const stored = loadMigration(localStorage, a);
       // A fully completed run is history: reconnecting starts from a fresh scan of the wallet.
       const completed = !!stored && isFullyCompleted(stored);
+      setInvitesState(loadInvites(localStorage, a));
       const loaded = loadProfiles(localStorage, a);
       setProfileIssues(loaded.rejected);
       const records = [...(stored ? [stored] : []), ...loadMigrationHistory(localStorage, a)];
@@ -288,6 +295,21 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     [setDraft, source],
   );
 
+  const setInvites = useCallback((fn: (list: OwnerInvite[]) => OwnerInvite[]) => {
+    setInvitesState((list) => {
+      const next = fn(list);
+      const src = sourceRef.current;
+      if (src) {
+        try {
+          saveInvites(localStorage, src, next);
+        } catch {
+          // Storage quota: invitations stay in memory for this session.
+        }
+      }
+      return next;
+    });
+  }, []);
+
   const activeProfile = useMemo(() => profiles.find((p) => p.id === draft.profileId) ?? null, [profiles, draft.profileId]);
 
   const selection = useMemo(
@@ -324,6 +346,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       activeProfile,
       saveProfile,
       selectProfile,
+      invites,
+      setInvites,
     }),
     [
       source,
@@ -345,6 +369,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       activeProfile,
       saveProfile,
       selectProfile,
+      invites,
+      setInvites,
     ],
   );
 

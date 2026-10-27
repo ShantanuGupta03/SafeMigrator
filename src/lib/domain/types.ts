@@ -91,8 +91,14 @@ export interface NetworkDiscovery {
 
 export type SignerKind = "connected_eoa" | "hardware" | "independent_wallet" | "other";
 
+/**
+ * A verified owner signature. Records without `schema` are legacy v1 challenges (bound to the
+ * configuration hash only); `owner-ack-v2` also binds the pinned deployment commitment and the
+ * invitation's scope, and is what v1.5 creates.
+ */
 export interface OwnerVerification {
   method: "eip712";
+  schema?: "owner-ack-v2";
   signature: Hex;
   nonce: Hex;
   issuedAt: number;
@@ -100,8 +106,16 @@ export interface OwnerVerification {
   verifiedAt: number;
   /** Signature verified as plain ECDSA (EOA) or via ERC-1271/6492 (contract wallet). */
   signerType: "eoa" | "contract";
-  /** Chain used for ERC-1271 verification. */
+  /** Network the signature's EIP-712 domain names; ERC-1271 signatures are only checked there. */
   chainId: number;
+  /* v2 only */
+  expiresAt?: number;
+  deploymentCommitment?: Hex;
+  scopeChainIds?: number[];
+  safeAddress?: Address;
+  profileId?: string;
+  source?: Address;
+  environment?: Environment;
 }
 
 export interface SignerSlot {

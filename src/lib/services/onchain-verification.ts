@@ -18,7 +18,7 @@ function slotToAddress(slot: Hex | undefined): Address | null {
 
 /** Reads the actual Safe configuration from chain. Never trusts local state. */
 export async function inspectSafe(client: PublicClient, address: Address, blockNumber?: bigint): Promise<SafeInspection> {
-  const block = blockNumber ?? (await client.getBlockNumber());
+  const block = blockNumber ?? (await client.getBlockNumber({ cacheTime: 0 }));
   const code = await client.getCode({ address, blockNumber: block });
   const base: SafeInspection = {
     address,

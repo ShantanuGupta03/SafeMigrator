@@ -1,6 +1,7 @@
 import type { Address } from "viem";
 import { PROFILE_SCHEMA_VERSION, profileStoreSchema, type SafeProfile } from "@/lib/domain/profile";
 import type { Environment, Migration } from "@/lib/domain/types";
+import { ownerInviteSchema, type OwnerInvite } from "@/lib/services/owner-invites";
 import { legacyProfilesFromMigrations, parseProfile } from "@/lib/services/safe-profile";
 import type { KeyValueStore } from "./persistence";
 
@@ -77,4 +78,28 @@ export function withLegacyProfiles(profiles: readonly SafeProfile[], source: Add
   const known = new Set(profiles.map((p) => p.id));
   const legacy = legacyProfilesFromMigrations(source, environment, unlinked).filter((p) => !known.has(p.id));
   return legacy.length ? [...profiles, ...legacy] : [...profiles];
+}
+
+/* --------------------------------- Invites -------------------------------- */
+
+export function invitesKey(source: Address): string {
+  return `${PREFIX}:invites:${source.toLowerCase()}`;
+}
+
+/** Outstanding and answered owner invitations issued by this workspace. Invalid entries are dropped. */
+export function loadInvites(store: KeyValueStore, source: Address): OwnerInvite[] {
+  try {
+    const list = JSON.parse(store.getItem(invitesKey(source)) ?? "[]") as unknown;
+    if (!Array.isArray(list)) return [];
+    return list.flatMap((x) => {
+      const r = ownerInviteSchema.safeParse(x);
+      return r.success ? [r.data] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+export function saveInvites(store: KeyValueStore, source: Address, invites: readonly OwnerInvite[]): void {
+  store.setItem(invitesKey(source), JSON.stringify(invites.slice(-200)));
 }

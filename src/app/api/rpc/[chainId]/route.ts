@@ -13,11 +13,13 @@ function upstreamUrls(chainId: number): string[] {
 }
 
 const MAX_BODY_BYTES = 256_000;
+/** Requests per minute per client and chain. Server-only override for self-hosting and local test chains. */
+const RATE_LIMIT_PER_MINUTE = Math.max(10, Number(process.env.RPC_RATE_LIMIT_PER_MINUTE) || 120);
 
 export async function POST(request: Request, ctx: { params: Promise<{ chainId: string }> }) {
   const { chainId: raw } = await ctx.params;
   const chainId = Number(raw);
-  const limit = checkRateLimit(`rpc:${clientKey(request)}:${chainId}`, 120, 60_000);
+  const limit = checkRateLimit(`rpc:${clientKey(request)}:${chainId}`, RATE_LIMIT_PER_MINUTE, 60_000);
   if (!limit.ok) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers: { "retry-after": String(limit.retryAfterSec) } });
   }

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { getPublicClient } from "@/lib/chains/clients";
 import { chainsForEnvironment, getChain } from "@/lib/chains/registry";
 import type { SafeProfile } from "@/lib/domain/profile";
-import type { ChainSafeTarget, SafeConfig, SupportedSafeVersion } from "@/lib/domain/types";
+import type { ChainSafeTarget, OwnerVerification, SafeConfig, SupportedSafeVersion } from "@/lib/domain/types";
 import { negotiateSafeVersion, resolveChainTarget } from "@/lib/services/safe-deployment";
 import { isPinned, profileMatchesConfig, resolvePinnedTarget } from "@/lib/services/safe-profile";
 import { buildSafeConfig, deriveSaltNonce, safeConfigHash, validateSigners } from "@/lib/services/signer-configuration";
@@ -35,14 +35,26 @@ export function usePinnedProfile(): SafeProfile | null {
   return useMemo(() => (activeProfile && isPinned(activeProfile) && profileMatchesConfig(activeProfile, config) ? activeProfile : null), [activeProfile, config]);
 }
 
-/** Signers whose signature is bound to the *current* configuration. */
+/**
+ * Signers whose v2 acknowledgement is bound to the current configuration AND the pinned deployment
+ * commitment. Legacy v1 challenges (configuration hash only) no longer count in the draft; owners
+ * verify again so their signature commits to the exact recipe.
+ */
 export function useVerifiedOwners() {
   const { draft } = useAppState();
   const { configHash } = useSafeConfig();
+  const pinned = usePinnedProfile();
   return useMemo(
-    () => draft.signers.filter((s) => s.address && s.verification && s.verification.configHash === configHash).map((s) => s.address!),
-    [draft.signers, configHash],
+    () =>
+      draft.signers
+        .filter((s) => s.address && isCurrentVerification(s.verification, configHash, pinned?.commitment ?? null))
+        .map((s) => s.address!),
+    [draft.signers, configHash, pinned?.commitment],
   );
+}
+
+export function isCurrentVerification(v: OwnerVerification | null, configHash: string | null, commitment: string | null): boolean {
+  return !!v && !!configHash && !!commitment && v.schema === "owner-ack-v2" && v.configHash === configHash && v.deploymentCommitment === commitment;
 }
 
 export interface TargetsState {

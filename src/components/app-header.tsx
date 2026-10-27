@@ -74,7 +74,7 @@ export function AppHeader() {
       {mismatch && signerSlot && (
         <div className="bg-labs-accent px-4 py-2 text-center text-xs font-medium text-safe-black">
           Connected as Signer {signerSlot.slot + 1} ({signerSlot.label || shortAddress(address)}).{" "}
-          {step === "signers" ? "Use “Verify control” on its card to sign the ownership message" : "Go to the Signers step to verify this owner"}, then switch your wallet back to the
+          {step === "signers" ? "Use “Sign here” under Verify owners to sign the ownership acknowledgement" : "Go to the Signers step to verify this owner"}, then switch your wallet back to the
           source {shortAddress(source)}. Migration transactions are only sent from the source.
         </div>
       )}

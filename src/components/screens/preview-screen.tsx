@@ -25,9 +25,10 @@ import { buildMigrationScope, requiresPartialAck } from "@/lib/services/migratio
 import { chooseProfileForRun, expectedGovernanceFrom, pinRecipe, profileTitle } from "@/lib/services/safe-profile";
 import { getAtomicCapabilities, type ChainCapability, type Eip1193Requester } from "@/lib/services/transaction-capability";
 import { selectionKey } from "@/lib/services/selection";
+import { safeConfigHash } from "@/lib/services/signer-configuration";
 import { useAppState } from "../app-state";
 import { useRunner } from "../hooks/use-runner";
-import { usePinnedProfile, useSafeConfig, useSafeTargets, useVerifiedOwners } from "../hooks/use-safe-config";
+import { isCurrentVerification, usePinnedProfile, useSafeConfig, useSafeTargets, useVerifiedOwners } from "../hooks/use-safe-config";
 import { AddressChip, ChainLabel, ScreenHeading } from "../shared";
 import { TargetStatus } from "./signers-screen";
 
@@ -141,9 +142,9 @@ export function PreviewScreen() {
   const ownerProofs = useMemo(
     () =>
       draft.signers
-        .filter((s) => s.address && s.verification?.configHash && config)
+        .filter((s) => s.address && config && isCurrentVerification(s.verification, safeConfigHash(config), pinnedProfile?.commitment ?? null))
         .map((s) => ({ owner: s.address!, verification: s.verification! })),
-    [draft.signers, config],
+    [draft.signers, config, pinnedProfile?.commitment],
   );
 
   const start = async () => {

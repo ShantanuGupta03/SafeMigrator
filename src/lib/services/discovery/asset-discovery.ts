@@ -141,7 +141,7 @@ export async function discoverNetwork(params: {
   try {
     const rpcChain = await client.getChainId();
     if (rpcChain !== chainId) throw new Error(`RPC returned chain ${rpcChain}`);
-    block = await client.getBlockNumber();
+    block = await client.getBlockNumber({ cacheTime: 0 });
   } catch (e) {
     result.status = "error";
     errors.push(`RPC unavailable for ${chain.name}: ${(e as Error).message.slice(0, 160)}. Balances are unknown — not zero.`);

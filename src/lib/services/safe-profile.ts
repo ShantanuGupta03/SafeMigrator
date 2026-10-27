@@ -43,7 +43,7 @@ export const RECIPE_COMMITMENT_TAG = "safe-migrator/deployment-recipe/v1";
  * through the exact initializer and salt nonce; the version, contracts and creation code are bound
  * explicitly so a recipe for another version can never collide with this one.
  */
-export function recipeCommitment(r: DeploymentRecipe): Hex {
+export function recipeCommitment(r: Omit<DeploymentRecipe, "proxyCreationCode">): Hex {
   return keccak256(
     encodeAbiParameters(
       [
@@ -602,13 +602,16 @@ export function chooseProfileForRun(params: {
   environment: Environment;
   config: SafeConfig;
   pinned: { recipe: DeploymentRecipe; commitment: Hex; address: Address };
+  /** "proposed" when pinning only for owner verification; a run makes it "active". */
+  status?: "proposed" | "active";
   now?: number;
 }): { profile: SafeProfile; replaces: string[] } {
   const { pinned } = params;
+  const status = params.status ?? "active";
   const same = params.profiles.find((p) => isPinned(p) && p.commitment === pinned.commitment && p.environment === params.environment);
-  if (same) return { profile: same.status === "proposed" ? { ...same, status: "active", updatedAt: Date.now() } : same, replaces: [] };
+  if (same) return { profile: same.status === "proposed" && status === "active" ? { ...same, status: "active", updatedAt: Date.now() } : same, replaces: [] };
 
-  let profile = createProfile({ source: params.source, environment: params.environment, config: params.config, recipe: pinned.recipe, status: "active", now: params.now });
+  let profile = createProfile({ source: params.source, environment: params.environment, config: params.config, recipe: pinned.recipe, status, now: params.now });
   const hash = safeConfigHash(params.config);
   const legacy = params.profiles.filter(
     (p) =>
@@ -621,6 +624,7 @@ export function chooseProfileForRun(params: {
   for (const l of legacy) {
     profile = {
       ...profile,
+      status: "active",
       createdAt: Math.min(profile.createdAt, l.createdAt),
       runIds: [...new Set([...l.runIds, ...profile.runIds])],
       legacy: { ...l.legacy!, reason: "Merged pre-v1.5 records whose address matches this pinned recipe." },
