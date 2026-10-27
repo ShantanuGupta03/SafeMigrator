@@ -191,6 +191,8 @@ export interface ChainSafeTarget {
   pinned?: boolean;
   /** The RPC could not be read; the status says nothing about the chain itself. */
   unavailable?: boolean;
+  /** Deploying here is not allowed (for example governance changed on another network of the saved Safe). */
+  deploymentBlocked?: string | null;
 }
 
 /* -------------------------------------------------------------------------- */

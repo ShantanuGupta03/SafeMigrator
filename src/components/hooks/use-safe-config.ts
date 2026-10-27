@@ -6,6 +6,7 @@ import { chainsForEnvironment, getChain } from "@/lib/chains/registry";
 import type { SafeProfile } from "@/lib/domain/profile";
 import type { ChainSafeTarget, OwnerVerification, SafeConfig, SupportedSafeVersion } from "@/lib/domain/types";
 import { negotiateSafeVersion, resolveChainTarget } from "@/lib/services/safe-deployment";
+import { knownDeploymentGovernance } from "@/lib/services/chain-extension";
 import { isPinned, profileMatchesConfig, resolvePinnedTarget } from "@/lib/services/safe-profile";
 import { buildSafeConfig, deriveSaltNonce, safeConfigHash, validateSigners } from "@/lib/services/signer-configuration";
 import { useAppState } from "../app-state";
@@ -88,7 +89,13 @@ export function useSafeTargets(config: SafeConfig | null, chainIds: number[], no
       let state: TargetsState;
       try {
         if (pinned) {
-          const entries = await Promise.all(chainIds.map(async (id) => [id, await resolvePinnedTarget(id, getPublicClient(id), pinned)] as const));
+          let entries = await Promise.all(chainIds.map(async (id) => [id, await resolvePinnedTarget(id, getPublicClient(id), pinned)] as const));
+          // A new deployment installs the ORIGINAL owners: only allowed while every known deployment still has them.
+          const known = pinned.deployments.map((d) => d.chainId);
+          if (entries.some(([id, t]) => t.status === "not_deployed" && !known.includes(id)) && known.length) {
+            const { blockers } = await knownDeploymentGovernance(pinned, getPublicClient);
+            if (blockers.length) entries = entries.map(([id, t]) => [id, t.status === "not_deployed" ? { ...t, deploymentBlocked: blockers.join(" ") } : t] as const);
+          }
           state = { loading: false, commonVersion: pinned.recipe!.safeVersion, targets: Object.fromEntries(entries), error: null, pinnedProfileId: pinned.id };
         } else {
           const envChains = chainsForEnvironment(draft.environment).map((c) => c.id);

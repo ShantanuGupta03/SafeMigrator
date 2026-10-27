@@ -28,6 +28,33 @@ export interface ExtensionAssessment {
 
 const nameOf = (id: number) => findChain(id)?.name ?? `chain ${id}`;
 
+/**
+ * Re-reads every known deployment of a pinned profile. Any change from the original configuration,
+ * or any read failure, is a reason not to deploy the original recipe on another network.
+ */
+export async function knownDeploymentGovernance(profile: SafeProfile, clientFor: (chainId: number) => PublicClient, now = Date.now()): Promise<{ snapshots: GovernanceSnapshot[]; blockers: string[] }> {
+  const snapshots: GovernanceSnapshot[] = [];
+  const blockers: string[] = [];
+  if (!isPinned(profile)) return { snapshots, blockers: ["This saved Safe has no trusted deployment recipe."] };
+  const contracts = canonicalContractSet(profile.recipe.safeVersion);
+  for (const d of profile.deployments) {
+    try {
+      const insp = await inspectSafe(clientFor(d.chainId), profile.safeAddress);
+      const s = snapshotFromInspection(d.chainId, insp, profile.original, contracts, now);
+      snapshots.push(s);
+      if (!s.isSafe) blockers.push(`${nameOf(d.chainId)}: no Safe found at the recorded address. Resolve this before adding networks.`);
+      else if (!s.matchesOriginal) {
+        blockers.push(
+          `${nameOf(d.chainId)}: the Safe's owners or settings changed since deployment (${s.issues.join(" ")}). A new deployment would install the ORIGINAL owners and threshold at the same address, which is not what this Safe is anymore. v1.5 does not synchronise owners; create a separate Safe through the normal flow instead.`,
+        );
+      }
+    } catch (e) {
+      blockers.push(`${nameOf(d.chainId)}: governance could not be read (${(e as Error).message.slice(0, 120)}). Retry when the network is reachable.`);
+    }
+  }
+  return { snapshots, blockers };
+}
+
 export async function assessExtension(params: { profile: SafeProfile; chainId: number; clientFor: (chainId: number) => PublicClient; now?: number }): Promise<ExtensionAssessment> {
   const { profile, chainId } = params;
   const now = params.now ?? Date.now();
@@ -41,23 +68,9 @@ export async function assessExtension(params: { profile: SafeProfile; chainId: n
   if (profile.deployments.some((d) => d.chainId === chainId)) return blocked(emptyTarget, [`The Safe is already recorded on ${nameOf(chainId)}.`]);
 
   // 1. Re-read governance on every known deployment. Unknown is treated like diverged: block.
-  const contracts = canonicalContractSet(profile.recipe.safeVersion);
-  const snapshots: GovernanceSnapshot[] = [];
-  for (const d of profile.deployments) {
-    try {
-      const insp = await inspectSafe(params.clientFor(d.chainId), profile.safeAddress);
-      const s = snapshotFromInspection(d.chainId, insp, profile.original, contracts, now);
-      snapshots.push(s);
-      if (!s.isSafe) blockers.push(`${nameOf(d.chainId)}: no Safe found at the recorded address. Resolve this before adding networks.`);
-      else if (!s.matchesOriginal) {
-        blockers.push(
-          `${nameOf(d.chainId)}: the Safe's owners or settings changed since deployment (${s.issues.join(" ")}). A new deployment would install the ORIGINAL owners and threshold at the same address, which is not what this Safe is anymore. v1.5 does not synchronise owners; create a separate Safe through the normal flow instead.`,
-        );
-      }
-    } catch (e) {
-      blockers.push(`${nameOf(d.chainId)}: governance could not be read (${(e as Error).message.slice(0, 120)}). Retry when the network is reachable.`);
-    }
-  }
+  const known = await knownDeploymentGovernance(profile, params.clientFor, now);
+  const snapshots = known.snapshots;
+  blockers.push(...known.blockers);
   if (profile.deployments.length === 0) warnings.push("The Safe is not recorded as deployed anywhere yet; this will be its first deployment.");
 
   // 2. Resolve the target from the pinned recipe only.

@@ -99,6 +99,11 @@ interface AppStateValue {
   /** The profile the draft is linked to, if any. */
   activeProfile: SafeProfile | null;
   saveProfile(p: SafeProfile, replaces?: string[]): void;
+  /**
+   * Applies `fn` to the LATEST stored version of a profile. Use this from async work so concurrent
+   * updates (scans, readiness checks, extension checks) never overwrite each other.
+   */
+  updateProfile(id: string, fn: (p: SafeProfile) => SafeProfile): void;
   /** Links the draft to a saved Safe and loads its original owners, threshold and salt. */
   selectProfile(id: string | null): void;
   /** Owner invitations this workspace issued (local nonce registry). */
@@ -272,6 +277,16 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     [commitProfiles],
   );
 
+  const updateProfile = useCallback(
+    (id: string, fn: (p: SafeProfile) => SafeProfile) => {
+      const current = profilesRef.current.find((x) => x.id === id);
+      if (!current) return;
+      const next = fn(current);
+      if (next !== current) commitProfiles(upsertProfile(profilesRef.current, { ...next, updatedAt: Date.now() }));
+    },
+    [commitProfiles],
+  );
+
   const selectProfile = useCallback(
     (id: string | null) => {
       const p = id ? profilesRef.current.find((x) => x.id === id) : null;
@@ -342,6 +357,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       profileIssues,
       activeProfile,
       saveProfile,
+      updateProfile,
       selectProfile,
       invites,
       setInvites,
@@ -365,6 +381,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       profileIssues,
       activeProfile,
       saveProfile,
+      updateProfile,
       selectProfile,
       invites,
       setInvites,

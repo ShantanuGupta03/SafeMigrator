@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { getPublicClient } from "@/lib/chains/clients";
 import { getChain, safeWalletUrl } from "@/lib/chains/registry";
-import type { SafeProfile } from "@/lib/domain/profile";
+import type { GovernanceSnapshot, SafeProfile } from "@/lib/domain/profile";
 import { inspectSafe } from "@/lib/services/onchain-verification";
 import { canonicalContractSet } from "@/lib/services/safe-deployment";
 import {
@@ -26,6 +26,7 @@ import {
 import { cn } from "@/lib/utils";
 import { AddNetworkPanel } from "../add-network-panel";
 import { LateArrivalsPanel } from "../late-arrivals-panel";
+import { ReadinessPanel } from "../readiness-panel";
 import { useAppState } from "../app-state";
 import { AddressChip, ChainLabel, downloadFile, readFileText, ScreenHeading, timeAgo, TxLink } from "../shared";
 
@@ -35,7 +36,7 @@ import { AddressChip, ChainLabel, downloadFile, readFileText, ScreenHeading, tim
  * that moves assets goes through the normal Review step.
  */
 export function SafeScreen() {
-  const { profiles, profileIssues, source, draft, setStep, saveProfile, selectProfile, activeProfile } = useAppState();
+  const { profiles, profileIssues, source, draft, setStep, saveProfile, updateProfile, selectProfile, activeProfile } = useAppState();
   const [importError, setImportError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const visible = profiles.filter((p) => p.environment === draft.environment);
@@ -92,7 +93,7 @@ export function SafeScreen() {
               selectProfile(p.id);
               setStep("discover");
             }}
-            onSave={saveProfile}
+            onUpdate={(fn) => updateProfile(p.id, fn)}
           />
         ))}
       </div>
@@ -100,7 +101,7 @@ export function SafeScreen() {
   );
 }
 
-function ProfileCard({ profile: p, active, onUse, onSave }: { profile: SafeProfile; active: boolean; onUse(): void; onSave(p: SafeProfile, replaces?: string[]): void }) {
+function ProfileCard({ profile: p, active, onUse, onUpdate }: { profile: SafeProfile; active: boolean; onUse(): void; onUpdate(fn: (p: SafeProfile) => SafeProfile): void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [label, setLabel] = useState(p.label ?? "");
@@ -113,17 +114,17 @@ function ProfileCard({ profile: p, active, onUse, onSave }: { profile: SafeProfi
     const version = p.recipe.safeVersion;
     setBusy("refresh");
     setError(null);
-    let next: SafeProfile = p;
+    const snapshots: GovernanceSnapshot[] = [];
     const failures: string[] = [];
     for (const d of p.deployments) {
       try {
         const insp = await inspectSafe(getPublicClient(d.chainId), address);
-        next = withSnapshot(next, snapshotFromInspection(d.chainId, insp, p.original, canonicalContractSet(version)));
+        snapshots.push(snapshotFromInspection(d.chainId, insp, p.original, canonicalContractSet(version)));
       } catch (e) {
         failures.push(`${getChain(d.chainId).name}: ${(e as Error).message.slice(0, 120)}`);
       }
     }
-    onSave(next);
+    onUpdate((cur) => snapshots.reduce<SafeProfile>((acc, s) => withSnapshot(acc, s), cur));
     if (failures.length) setError(`Could not read: ${failures.join(" · ")}. Their last observation is kept and marked stale.`);
     setBusy(null);
   };
@@ -132,7 +133,7 @@ function ProfileCard({ profile: p, active, onUse, onSave }: { profile: SafeProfi
     setBusy("recover");
     setError(null);
     const r = await recoverLegacyProfile(p, getPublicClient);
-    if (r.ok) onSave(r.profile);
+    if (r.ok) onUpdate(() => r.profile);
     else setError(r.reason);
     setBusy(null);
   };
@@ -234,15 +235,16 @@ function ProfileCard({ profile: p, active, onUse, onSave }: { profile: SafeProfi
           )}
         </div>
 
-        {pinned && <LateArrivalsPanel profile={p} onSave={onSave} />}
-        {pinned && <AddNetworkPanel profile={p} onSave={onSave} />}
+        {pinned && <ReadinessPanel profile={p} onUpdate={onUpdate} />}
+        {pinned && <LateArrivalsPanel profile={p} onUpdate={onUpdate} />}
+        {pinned && <AddNetworkPanel profile={p} onUpdate={onUpdate} />}
 
         <div className="flex flex-wrap items-end gap-2">
           <label className="grid gap-1 text-xs text-muted-foreground">
             Private label (stays on this device; never in shareable receipts)
             <Input className="w-64 font-sans" maxLength={80} value={label} onChange={(e) => setLabel(e.target.value)} />
           </label>
-          <Button size="sm" variant="ghost" onClick={() => onSave({ ...p, label: label.trim() || null, updatedAt: Date.now() })} disabled={(p.label ?? "") === label.trim()}>
+          <Button size="sm" variant="ghost" onClick={() => onUpdate((cur) => ({ ...cur, label: label.trim() || null }))} disabled={(p.label ?? "") === label.trim()}>
             Save label
           </Button>
         </div>

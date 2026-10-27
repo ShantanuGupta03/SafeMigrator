@@ -24,7 +24,7 @@ import { TargetStatus } from "./screens/signers-screen";
  * Safe that already exists there. Every check re-reads the chain; the deployment itself goes
  * through the normal executor (simulation, gas reserve, receipt tracking, onchain verification).
  */
-export function AddNetworkPanel({ profile, onSave }: { profile: SafeProfile; onSave(p: SafeProfile): void }) {
+export function AddNetworkPanel({ profile, onUpdate }: { profile: SafeProfile; onUpdate(fn: (p: SafeProfile) => SafeProfile): void }) {
   const { draft, setDraft, dispatch, setStep, source } = useAppState();
   const { address, chainId: walletChainId } = useConnection();
   const runner = useRunner();
@@ -47,7 +47,7 @@ export function AddNetworkPanel({ profile, onSave }: { profile: SafeProfile; onS
     try {
       const a = await assessExtension({ profile, chainId, clientFor: getPublicClient });
       setAssessment(a);
-      onSave(applyAssessment(profile, { ...a, action: a.action === "reuse" ? "blocked" : a.action }));
+      onUpdate((cur) => applyAssessment(cur, { ...a, action: a.action === "reuse" ? "blocked" : a.action }));
       if (a.action === "deploy") {
         const client = getPublicClient(chainId);
         const actions = buildActions(chainId, [], needsDeploymentFor(a.target));
@@ -136,7 +136,7 @@ export function AddNetworkPanel({ profile, onSave }: { profile: SafeProfile; onS
             </Alert>
           ))}
           {assessment.action === "reuse" && (
-            <Button size="sm" onClick={() => onSave(applyAssessment(profile, assessment))}>
+            <Button size="sm" onClick={() => onUpdate((cur) => applyAssessment(cur, assessment))}>
               <Plus /> Record the existing Safe
             </Button>
           )}

@@ -252,3 +252,47 @@ describe.runIf(run)("saved Safe: late arrivals and sweeps (local canonical chain
     expect(after.watch.pending.filter((x) => x.standard !== "native")).toEqual([]);
   }, 180_000);
 });
+
+describe.runIf(run)("saved Safe: outgoing-transaction evidence (local canonical chains)", () => {
+  it("accepts only a successful execution by the Safe itself", async () => {
+    const { verifyOutgoingSafeTx } = await import("@/lib/services/readiness");
+    const { parseAbi, concat } = await import("viem");
+    const keys = [generatePrivateKey(), generatePrivateKey(), generatePrivateKey()].map((k) => privateKeyToAccount(k));
+    const source = keys[0]!;
+    const config = buildSafeConfig(keys.map((k) => k.address), 2, deriveSaltNonce(source.address));
+    const pin = await pinRecipe(clientFor(SEPOLIA), SEPOLIA, config, "1.3.0");
+    for (const id of [SEPOLIA, CHIADO]) await rpc(id, "hardhat_setBalance", [source.address, toHex(parseEther("10"))]);
+    const profile = await deployOnly(createProfile({ source: source.address, environment: "testnet", config, recipe: pin.recipe, status: "proposed" }), SEPOLIA, source);
+    const safe = profile.safeAddress!;
+    const client = clientFor(SEPOLIA);
+    await rpc(SEPOLIA, "hardhat_setBalance", [safe, toHex(parseEther("1"))]);
+
+    // Two owners sign a 1-wei transfer out of the Safe; one of them submits it.
+    const abi = parseAbi([
+      "function nonce() view returns (uint256)",
+      "function getTransactionHash(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, uint256 _nonce) view returns (bytes32)",
+      "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) returns (bool)",
+    ]);
+    const zero = "0x0000000000000000000000000000000000000000" as Address;
+    const nonce = await client.readContract({ address: safe, abi, functionName: "nonce" });
+    const txArgs = [keys[2]!.address, 1n, "0x", 0, 0n, 0n, 0n, zero, zero] as const;
+    const hash = await client.readContract({ address: safe, abi, functionName: "getTransactionHash", args: [...txArgs, nonce] });
+    const signers = [...keys.slice(0, 2)].sort((a, b) => (BigInt(a.address) < BigInt(b.address) ? -1 : 1));
+    const signatures = concat(await Promise.all(signers.map((k) => k.sign({ hash }))));
+    const w = createWalletClient({ account: source, chain: getChain(SEPOLIA).viemChain, transport: http(RPC[SEPOLIA]) });
+    const execHash = await w.sendTransaction({ to: safe, data: encodeFunctionData({ abi, functionName: "execTransaction", args: [...txArgs, signatures] }) } as never);
+    await client.waitForTransactionReceipt({ hash: execHash });
+
+    const ok = await verifyOutgoingSafeTx({ client, chainId: SEPOLIA, safe, txHash: execHash });
+    expect(ok).toMatchObject({ ok: true, evidence: { thresholdAtBlock: 2, txHash: execHash.toLowerCase() } });
+
+    // A plain deposit that touches the Safe is not evidence of threshold signing.
+    const deposit = await w.sendTransaction({ to: safe, value: 1n } as never);
+    await client.waitForTransactionReceipt({ hash: deposit });
+    expect((await verifyOutgoingSafeTx({ client, chainId: SEPOLIA, safe, txHash: deposit })).ok).toBe(false);
+    // The right hash on the wrong network is not evidence either.
+    expect((await verifyOutgoingSafeTx({ client: clientFor(CHIADO), chainId: CHIADO, safe, txHash: execHash })).ok).toBe(false);
+    // Another Safe's execution does not count for this Safe.
+    expect((await verifyOutgoingSafeTx({ client, chainId: SEPOLIA, safe: keys[1]!.address, txHash: execHash })).ok).toBe(false);
+  }, 180_000);
+});

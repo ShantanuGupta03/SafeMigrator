@@ -7,9 +7,18 @@ import type { Hex, PrivateKeyAccount, TypedDataDefinition } from "viem";
  * including eth_sendTransaction, is recorded and refused, so a test can assert that a flow never
  * asked for a transaction.
  */
-export async function installMockWallet(page: Page, account: PrivateKeyAccount, chainId = 11155111) {
+export async function installMockWallet(page: Page, account: PrivateKeyAccount, chainId = 11155111, opts: { rpcFor?: (chainId: number) => string } = {}) {
   const requests: string[] = [];
   await page.exposeFunction("__smSignTypedData", async (json: string) => signTypedJson(account, json));
+  // Only when a test passes local RPCs: transactions are signed in Node and sent to local test chains.
+  await page.exposeFunction("__smSendTransaction", async (chain: number, tx: Record<string, string>) => {
+    if (!opts.rpcFor) throw Object.assign(new Error("Mock wallet refuses transactions"), { code: 4001 });
+    const { createWalletClient, http } = await import("viem");
+    const { getChain } = await import("@/lib/chains/registry");
+    const w = createWalletClient({ account, chain: getChain(chain).viemChain, transport: http(opts.rpcFor(chain)) });
+    const big = (v?: string) => (v === undefined ? undefined : BigInt(v));
+    return w.sendTransaction({ to: tx.to as `0x${string}`, data: tx.data as `0x${string}`, value: big(tx.value), gas: big(tx.gas), maxFeePerGas: big(tx.maxFeePerGas), maxPriorityFeePerGas: big(tx.maxPriorityFeePerGas) } as never);
+  });
   await page.exposeFunction("__smRecord", (method: string) => {
     requests.push(method);
   });
@@ -17,12 +26,16 @@ export async function installMockWallet(page: Page, account: PrivateKeyAccount, 
     ({ address, chainId }) => {
       const listeners: Record<string, ((...a: unknown[]) => void)[]> = {};
       let current = chainId;
-      const w = window as unknown as { __smSignTypedData(j: string): Promise<string>; __smRecord(m: string): void };
+      const w = window as unknown as {
+        __smSignTypedData(j: string): Promise<string>;
+        __smSendTransaction(chain: number, tx: unknown): Promise<string>;
+        __smRecord(m: string): void;
+      };
       const emit = (e: string, v: unknown) => (listeners[e] ?? []).forEach((fn) => fn(v));
       const provider = {
         isMetaMask: false,
         request: async ({ method, params }: { method: string; params?: unknown[] }) => {
-          void w.__smRecord(method);
+          void w.__smRecord(method === "eth_sendTransaction" ? `${method}:${current}:${(params?.[0] as { to?: string })?.to ?? ""}` : method);
           switch (method) {
             case "eth_requestAccounts":
             case "eth_accounts":
@@ -40,7 +53,7 @@ export async function installMockWallet(page: Page, account: PrivateKeyAccount, 
             case "eth_signTypedData_v4":
               return w.__smSignTypedData(params?.[1] as string);
             case "eth_sendTransaction":
-              throw Object.assign(new Error("Mock wallet refuses transactions"), { code: 4001 });
+              return w.__smSendTransaction(current, params?.[0]);
             default:
               throw Object.assign(new Error(`Mock wallet does not support ${method}`), { code: 4200 });
           }

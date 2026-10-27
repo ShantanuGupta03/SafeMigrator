@@ -324,6 +324,7 @@ export function assembleChainPlan(
   if (t.status === "error") {
     blockers.push(t.unavailable ? `Network could not be read, so the Safe's state is unknown: ${t.issues.join(" ")}` : `Safe address could not be verified: ${t.issues.join(" ")}`);
   }
+  if (t.deploymentBlocked && t.status === "not_deployed") blockers.push(`A new deployment is not allowed here: ${t.deploymentBlocked}`);
   if (t.status === "deployed_governance_changed" && !opts.governanceAccepted) {
     blockers.push(`The Safe's owners or security settings changed since it was deployed: ${t.issues.join(" ")} Review the current governance before sending assets.`);
   }

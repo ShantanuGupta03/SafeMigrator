@@ -73,8 +73,8 @@ test("a co-owner verifies on another device through a link and a returned signed
   await expect(initiator.getByText(/1\/3 owners verified/)).toBeVisible();
 
   // Owner verification never produced a transaction prompt on either device.
-  expect(aliceCalls).not.toContain("eth_sendTransaction");
-  expect(bobCalls).not.toContain("eth_sendTransaction");
+  expect(aliceCalls.filter((c) => c.startsWith("eth_sendTransaction"))).toEqual([]);
+  expect(bobCalls.filter((c) => c.startsWith("eth_sendTransaction"))).toEqual([]);
   expect(bobCalls).toContain("eth_signTypedData_v4");
   await initiatorCtx.close();
   await coOwnerCtx.close();

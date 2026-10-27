@@ -25,7 +25,7 @@ const MAX_AUTO_CHECKS = 24;
  * runs and prepares a reviewed sweep. Checking is read-only; nothing is signed or sent from here.
  * It only runs while this page is open (and, for automatic checks, visible).
  */
-export function LateArrivalsPanel({ profile, onSave }: { profile: SafeProfile; onSave(p: SafeProfile): void }) {
+export function LateArrivalsPanel({ profile, onUpdate }: { profile: SafeProfile; onUpdate(fn: (p: SafeProfile) => SafeProfile): void }) {
   const { draft, setDraft, setStep, selectProfile, scan } = useAppState();
   const [checking, setChecking] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -52,8 +52,12 @@ export function LateArrivalsPanel({ profile, onSave }: { profile: SafeProfile; o
             await discoverNetwork({ chainId, owner: p.source, client: getPublicClient(chainId), manualImports: imports.filter((m) => m.chainId === chainId), fetchIndexer: fetchIndexerViaApi }),
           ]),
         );
-        const summary = applyScan(latest.current.watch, Object.fromEntries(results));
-        onSave({ ...latest.current, watch: summary.watch, updatedAt: Date.now() });
+        let summary = { newCount: 0, hiddenSuspicious: 0 };
+        onUpdate((cur) => {
+          const r = applyScan(cur.watch, Object.fromEntries(results));
+          summary = r;
+          return { ...cur, watch: r.watch };
+        });
         setMessage(
           `${reason === "auto" ? "Automatic check" : reason === "return" ? "Checked on return" : "Checked"}: ${summary.newCount} new item(s)${summary.hiddenSuspicious ? `, ${summary.hiddenSuspicious} suspicious token(s) hidden` : ""}.`,
         );
@@ -64,7 +68,7 @@ export function LateArrivalsPanel({ profile, onSave }: { profile: SafeProfile; o
         setChecking(false);
       }
     },
-    [draft.manualImports, onSave],
+    [draft.manualImports, onUpdate],
   );
 
   // Rescan when the user comes back to this page after a while.
@@ -149,7 +153,7 @@ export function LateArrivalsPanel({ profile, onSave }: { profile: SafeProfile; o
               p={p}
               checked={selected.includes(p.assetId)}
               onToggle={(on) => setSelected((s) => (on ? [...s, p.assetId] : s.filter((x) => x !== p.assetId)))}
-              onIgnore={() => onSave({ ...profile, watch: ignoreArrival(profile.watch, p), updatedAt: Date.now() })}
+              onIgnore={() => onUpdate((cur) => ({ ...cur, watch: ignoreArrival(cur.watch, p) }))}
             />
           ))}
         </ul>
@@ -158,14 +162,14 @@ export function LateArrivalsPanel({ profile, onSave }: { profile: SafeProfile; o
         <label className="flex flex-wrap items-center gap-2 text-xs">
           <Checkbox
             checked={autoCheck}
-            onChange={(e) => onSave({ ...profile, monitoring: { ...profile.monitoring, autoCheck: e.target.checked }, updatedAt: Date.now() })}
+            onChange={(e) => onUpdate((cur) => ({ ...cur, monitoring: { ...cur.monitoring, autoCheck: e.target.checked } }))}
           />
           Check automatically every
           <Select
             className="h-8 text-xs"
             value={intervalMinutes}
             aria-label="Check interval"
-            onChange={(e) => onSave({ ...profile, monitoring: { ...profile.monitoring, intervalMinutes: Number(e.target.value) }, updatedAt: Date.now() })}
+            onChange={(e) => onUpdate((cur) => ({ ...cur, monitoring: { ...cur.monitoring, intervalMinutes: Number(e.target.value) } }))}
           >
             {[15, 30, 60].map((m) => (
               <option key={m} value={m}>
@@ -194,7 +198,7 @@ function ArrivalRow({ p, checked, onToggle, onIgnore }: { p: PendingArrival; che
   return (
     <li className="flex flex-wrap items-center justify-between gap-2 p-2 text-sm">
       <label className="flex min-w-0 items-center gap-2">
-        <Checkbox checked={checked} disabled={!sweepable(p)} onChange={(e) => onToggle(e.target.checked)} aria-label={`Select ${p.label}`} />
+        <Checkbox checked={checked} disabled={!sweepable(p)} onChange={(e) => onToggle(e.target.checked)} aria-label={`Select ${p.label} on ${getChain(p.chainId).name}`} />
         <span className="truncate font-medium">{p.label}</span>
         <ChainLabel chainId={p.chainId} className="text-xs" />
       </label>
@@ -204,7 +208,7 @@ function ArrivalRow({ p, checked, onToggle, onIgnore }: { p: PendingArrival; che
           {p.kind === "new" ? "new" : `increased from ${p.standard === "erc721" ? "0" : formatAmount(p.previousBalance ?? "0", p.decimals)}`}
         </Badge>
         {!sweepable(p) && <Badge variant="outline">{p.classification.replace("_", " ")}: not sweepable here</Badge>}
-        <Button size="sm" variant="ghost" onClick={onIgnore} aria-label={`Ignore ${p.label}`}>
+        <Button size="sm" variant="ghost" onClick={onIgnore} aria-label={`Ignore ${p.label} on ${getChain(p.chainId).name}`}>
           <EyeOff /> Ignore
         </Button>
       </span>
