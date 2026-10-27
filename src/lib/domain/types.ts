@@ -59,6 +59,8 @@ export interface DiscoveredAsset {
   reasons: string[];
   sources: AssetSource[];
   verifiedOnchain: boolean;
+  /** Set only by a protocol adapter that identified this asset from onchain registry reads. */
+  protocol?: { adapter: "aave-v3"; market: string; pool: Address; underlying: Address };
 }
 
 export type CoverageLevel = "indexed" | "known_list_only" | "manual_only" | "unavailable";
@@ -308,6 +310,8 @@ export interface MigrationAction {
   /** Block at which `safeBalancesBefore` was read. */
   snapshotBlock?: BigIntString | null;
   uncertainty?: Uncertainty | null;
+  /** Protocol position moved by a plain transfer under an adapter's rules (rechecked before sending). */
+  protocol?: { adapter: "aave-v3"; market: string; pool: Address; underlying: Address } | null;
 }
 
 export type ChainPhase =

@@ -47,8 +47,10 @@ export function withHandledFromMigration(watch: WatchState, m: Migration, now = 
       for (const id of a.assetIds) {
         const retained = a.kind === "transfer_native" && a.status === "skipped";
         // Gas dust left on purpose is baselined at the balance the user reviewed; everything else at what stayed behind.
-        const remaining = a.verification?.sourceRemaining ?? (retained ? (m.scope?.selectedAssets.find((x) => x.assetId === id)?.amount ?? null) : "0");
+        let remaining = a.verification?.sourceRemaining ?? (retained ? (m.scope?.selectedAssets.find((x) => x.assetId === id)?.amount ?? null) : "0");
         if (remaining === null) continue;
+        // Interest-bearing positions keep accruing on any remainder; baseline 0.1% above it so that alone never alerts.
+        if (a.protocol) remaining = (BigInt(remaining) + BigInt(a.amounts[0] ?? "0") / 1000n).toString();
         const reason: HandledAsset["reason"] = retained ? "retained" : "migrated";
         handled = upsertHandled(handled, { assetId: id, chainId: c.chainId, balance: remaining, reason, at: now });
         done.add(id);

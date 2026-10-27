@@ -11,6 +11,7 @@ const raw = {
   gasLimitMarginBps: process.env.NEXT_PUBLIC_GAS_LIMIT_MARGIN_BPS,
   feeMarginBps: process.env.NEXT_PUBLIC_FEE_MARGIN_BPS,
   dustFeeMultiple: process.env.NEXT_PUBLIC_DUST_FEE_MULTIPLE,
+  enableAaveV3Beta: process.env.NEXT_PUBLIC_ENABLE_AAVE_V3_BETA,
 };
 
 const bps = (fallback: number, min: number) =>
@@ -38,6 +39,12 @@ const schema = z.object({
   gasLimitMarginBps: bps(13_000, 10_000),
   feeMarginBps: bps(12_500, 10_000),
   dustFeeMultiple: z.coerce.number().int().min(1).max(1000).catch(3),
+  /** Aave v3 supply-position adapter (beta). Off unless explicitly "true"; see docs/V1_5_IMPLEMENTATION.md. */
+  enableAaveV3Beta: z
+    .string()
+    .optional()
+    .transform((v) => v === "true")
+    .catch(false),
 });
 
 export type AppConfig = z.infer<typeof schema>;

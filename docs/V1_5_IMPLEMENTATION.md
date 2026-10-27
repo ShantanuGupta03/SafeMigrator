@@ -195,3 +195,29 @@ attached, so they are recorded as user-reported runs only.
   keeps them, sweep without redeployment (2 transactions, no factory call), quiet afterwards).
 * Not implemented: vesting/unclaimed entitlements are not detected as arrivals (no protocol
   integration); closed-browser monitoring and notifications are out of scope.
+
+### Phase 6: Aave v3 supply-position beta (implemented, DISABLED, fork evidence missing)
+
+* Interface: `src/lib/services/protocols/types.ts` (`enrich`, `recheck`, `interpretVerification`),
+  registry `src/lib/services/protocols/index.ts`. Extension points for Compound v2/III, LP and staked
+  positions are documented there; none are implemented.
+* Adapter: `src/lib/services/protocols/aave-v3.ts`, behind `NEXT_PUBLIC_ENABLE_AAVE_V3_BETA`
+  (default `false`). Markets: Aave v3 Sepolia, Base Sepolia, Ethereum Core, Base. Core addresses
+  were taken from the raw `bgd-labs/aave-address-book` files (`src/AaveV3*.sol`, main branch) during
+  implementation; re-verify before enabling.
+* Identification: provider → `getPool`/`getPoolDataProvider` must equal the registry; reserve list →
+  `getReserveTokensAddresses` → aToken map; each candidate aToken must confirm `POOL()` and
+  `UNDERLYING_ASSET_ADDRESS()`. Names and symbols are ignored (look-alike tokens stay specialized).
+* Risk: `getUserAccountData(source).totalDebtBase` for the whole pool must be exactly 0; debt or any
+  read failure keeps the position specialized. Rechecked in `prepareTransfers` immediately before
+  submission (blocks with `needs_attention`), after which the exact transfer is simulated as usual.
+  No approvals: the plain ERC-20 transfer adapter moves the aToken.
+* Accrual/rounding: received amount may be up to 2 base units below what was sent, or above it by
+  accrual (≤ 0.01% of the Safe's prior balance + 2). Anything outside stays
+  `verified_with_discrepancy`. Late-arrival baselines for these positions sit 0.1% above the
+  remainder, so ongoing interest alone does not alert. Incentive rewards stay with the source.
+* Evidence: `tests/unit/aave-adapter.test.ts` (6, mocked reads only). `tests/integration/aave-fork.test.ts`
+  (`npm run test:fork:aave`) covers debt-free success, debt refusal, debt appearing after review,
+  unknown debt, spoofed metadata, paused reserve and accrual against the real Sepolia deployment.
+  **It has not been run**: this environment cannot reach any Sepolia RPC to fork from. Until it
+  passes, the beta must stay disabled; nothing in the app enables it by default.

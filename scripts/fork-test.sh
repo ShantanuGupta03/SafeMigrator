@@ -57,4 +57,5 @@ done
 
 # Public RPCs prune old state quickly, so run immediately after the forks start.
 cd "$ROOT"
-RUN_FORK_TESTS=1 npx vitest run tests/integration/fork-migration.test.ts
+# Extra arguments select other fork suites, e.g. tests/integration/aave-fork.test.ts.
+RUN_FORK_TESTS=1 npx vitest run "${@:-tests/integration/fork-migration.test.ts}"

@@ -12,6 +12,7 @@ import {
   verifyTransfer,
 } from "./asset-transfer";
 import { validateMigrationOwnerProofs } from "./owner-readiness";
+import { adapterFor, interpretWithAdapter } from "./protocols";
 import { classifySubmissionError } from "./submission-errors";
 import { estimateCallGas, estimateL1DataFee, getFeeQuote, isDust, maxCost, spendableNative, type FeeQuote } from "./gas-estimation";
 import { compareSafeToConfig, compareSafeToGovernance, inspectSafe } from "./onchain-verification";
@@ -69,6 +70,11 @@ export class HaltRun extends Error {
 class ReceiptTimeout extends Error {}
 
 /* -------------------------------- Helpers --------------------------------- */
+
+/** Transfer verification, interpreted by the action's protocol adapter when it has one. */
+async function verifyAction(...args: Parameters<typeof verifyTransfer>) {
+  return interpretWithAdapter(args[1], await verifyTransfer(...args));
+}
 
 /**
  * Checks an already deployed Safe before assets go into it: the original configuration, or the
@@ -227,7 +233,7 @@ async function reconcileAwaitingWallet(deps: ExecutorDeps, chainId: number, a: M
       return;
     }
   } else {
-    const outcome = await verifyTransfer(client, a, m.source, c.safeAddress, block);
+    const outcome = await verifyAction(client, a, m.source, c.safeAddress, block);
     if (outcome.status === "verified" || outcome.status === "verified_with_discrepancy") {
       patch(deps, chainId, a.id, { status: outcome.status, verification: outcome.verification, error: null });
       return;
@@ -323,7 +329,7 @@ async function reconcileByEndState(deps: ExecutorDeps, chainId: number, actionId
   }
   const block = await client.getBlockNumber({ cacheTime: 0 });
   patch(deps, chainId, a.id, { status: "verifying" });
-  const outcome = await verifyTransfer(client, a, source, safe, block);
+  const outcome = await verifyAction(client, a, source, safe, block);
   if (outcome.status === "needs_attention") {
     patch(deps, chainId, a.id, { status: "needs_attention", verification: outcome.verification, error: fail("dropped", `${reason} No transfer was detected.`) });
   } else {
@@ -360,7 +366,7 @@ async function settleReceipt(deps: ExecutorDeps, chainId: number, actionId: stri
     return;
   }
   phase(deps, chainId, "verifying_balances");
-  const outcome = await verifyTransfer(client, actionOf(deps, chainId, a.id), m.source, c.safeAddress, receipt.blockNumber, receipt);
+  const outcome = await verifyAction(client, actionOf(deps, chainId, a.id), m.source, c.safeAddress, receipt.blockNumber, receipt);
   patch(deps, chainId, a.id, {
     status: outcome.status,
     verification: outcome.verification,
@@ -427,7 +433,7 @@ async function applyBatchOutcome(deps: ExecutorDeps, chainId: number, callsId: s
           await settleBatchedDeployment(deps, chainId, id, block, outcome.state === "reverted");
           continue;
         }
-        const v = await verifyTransfer(client, a, m.source, c.safeAddress, block);
+        const v = await verifyAction(client, a, m.source, c.safeAddress, block);
         if (v.status === "needs_attention" && outcome.state === "reverted") {
           patch(deps, chainId, id, { status: "failed", verification: v.verification, error: fail("reverted", "Batch reverted onchain. Nothing moved.") });
         } else {
@@ -621,6 +627,15 @@ async function prepareTransfers(deps: ExecutorDeps, chainId: number): Promise<Pr
         error: fail("amount_changed", "The amount to move changed since you reviewed the migration. Accept the new amount or go back to Review."),
       });
       continue;
+    }
+    const adapter = adapterFor(a);
+    if (a.protocol) {
+      const check = adapter ? await adapter.recheck({ chainId, source: m.source, action: a, client }) : { ok: false as const, reason: "Unknown protocol adapter." };
+      if (!check.ok) {
+        patch(deps, chainId, a.id, { status: "needs_attention", error: fail("blocked", check.reason) });
+        log(deps, chainId, "warn", `${a.label}: ${check.reason}`, { actionId: a.id });
+        continue;
+      }
     }
     const updated: MigrationAction =
       a.kind === "transfer_erc1155" ? { ...a, ...pruneZeroErc1155(a, refreshed.amounts) } : { ...a, amounts: refreshed.amounts };

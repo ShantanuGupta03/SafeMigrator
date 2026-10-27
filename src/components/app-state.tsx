@@ -7,6 +7,7 @@ import { chainsForEnvironment } from "@/lib/chains/registry";
 import type { SafeProfile } from "@/lib/domain/profile";
 import type { Environment, Migration, NetworkDiscovery, SignerSlot } from "@/lib/domain/types";
 import { discoverNetwork, fetchIndexerViaApi, type ManualImport } from "@/lib/services/discovery/asset-discovery";
+import { enrichWithAdapters } from "@/lib/services/protocols";
 import { effectiveSelection, importsForChains, type EffectiveSelection } from "@/lib/services/selection";
 import { syncProfileWithMigration } from "@/lib/services/safe-profile";
 import { DEFAULT_THRESHOLD } from "@/lib/services/signer-configuration";
@@ -236,14 +237,10 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       await Promise.all(
         ids.map(async (chainId) => {
           try {
-            const result = await discoverNetwork({
-              chainId,
-              owner: source,
-              client: getPublicClient(chainId),
-              manualImports: imports,
-              fetchIndexer: fetchIndexerViaApi,
-            });
-            setDiscovery((d) => ({ ...d, [chainId]: result }));
+            const client = getPublicClient(chainId);
+            const result = await discoverNetwork({ chainId, owner: source, client, manualImports: imports, fetchIndexer: fetchIndexerViaApi });
+            const assets = await enrichWithAdapters({ chainId, source, assets: result.assets, client });
+            setDiscovery((d) => ({ ...d, [chainId]: { ...result, assets } }));
           } finally {
             setScanning((s) => ({ ...s, [chainId]: false }));
           }

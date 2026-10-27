@@ -98,6 +98,7 @@ export function buildActions(chainId: number, assets: readonly DiscoveredAsset[]
         amounts: [a.balance],
         decimals: a.decimals,
         symbol: a.symbol,
+        protocol: a.protocol ?? null,
       }),
     );
   }
