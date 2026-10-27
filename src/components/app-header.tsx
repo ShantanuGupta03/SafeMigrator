@@ -32,12 +32,14 @@ export function AppHeader() {
               type="button"
               onClick={() => setStep("safe")}
               disabled={runActive}
+              aria-label="Saved Safes"
+              title="Saved Safes"
               className={cn(
                 "inline-flex h-8 items-center gap-1.5 rounded-xl px-3 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40",
                 step === "safe" && "bg-muted text-foreground",
               )}
             >
-              <Vault className="size-4" /> <span className="hidden sm:inline">Saved Safes</span>
+              <Vault className="size-4" /> <span className="hidden 2xl:inline">Saved Safes</span>
               {profiles.length > 0 && <span className="rounded-md bg-muted px-1.5 text-xs">{profiles.filter((p) => p.environment === draft.environment).length}</span>}
             </button>
           )}

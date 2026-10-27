@@ -119,3 +119,28 @@ After verification, the completion screen links to
 `https://app.safe.global/home?safe=<prefix>:<address>` using each network's Safe{Wallet} short name
 (`sep`, `chi`, `eth`, `base`, `arb1`, `oeth`, `matic`). Safe{Wallet} indexes new Safes automatically;
 indexing on Chiado can lag by a few minutes.
+
+## Pinned recipes (v1.5)
+
+Once a Safe is saved (frozen for owner verification or used by a run), its **deployment recipe** is
+pinned in the profile: derivation `safe-proxy-factory-create2-v1`, Safe version, L2 singleton,
+factory, fallback handler, the exact `setup` initializer, the salt nonce and the factory's
+`proxyCreationCode` (and its hash). Its commitment is
+
+```
+keccak256(abi.encode("safe-migrator/deployment-recipe/v1", derivation, version, "l2", factory,
+                     singleton, fallbackHandler, keccak256(initializer), saltNonce,
+                     keccak256(proxyCreationCode)))
+```
+
+and the address is recomputed offline from the recipe. On any network, `resolvePinnedTarget`
+verifies the canonical code hashes for the pinned version, that the factory's creation code has the
+pinned hash, that the recipe still yields the recorded address and that Protocol Kit agrees. It never
+picks another version. A network without the pinned version is `incompatible`; an unreadable network
+is reported as unknown. Code found at the address is classified as the original configuration,
+changed governance (a Safe from this recipe whose owners or settings were changed later) or a
+conflicting contract.
+
+Note that the original recipe recreates the same address on a new network with the **original**
+owners, even if owners were changed on other networks. That is why adding a network is blocked
+while any known deployment's governance diverged or cannot be read.

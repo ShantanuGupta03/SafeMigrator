@@ -221,3 +221,73 @@ attached, so they are recorded as user-reported runs only.
   unknown debt, spoofed metadata, paused reserve and accrual against the real Sepolia deployment.
   **It has not been run**: this environment cannot reach any Sepolia RPC to fork from. Until it
   passes, the beta must stay disabled; nothing in the app enables it by default.
+
+### Phase 7: readiness, UX integration, acceptance (done)
+
+* `src/lib/services/readiness.ts` + `src/components/readiness-panel.tsx`: deployment/settings per
+  network, owners with proven key control vs each network's *current* threshold, native gas in the
+  Safe, and outgoing-transaction evidence. Evidence is accepted only for a successful transaction
+  with an `ExecutionSuccess` log emitted by this Safe on that chain (threshold read at the block
+  before); deposits, other Safes' executions and wrong-network hashes are rejected (local-chain test
+  with a real 2-of-3 `execTransaction`). Manual acknowledgement is stored and shown separately.
+* Saved Safes screen (header "Saved Safes"): identity, per-network governance with age/staleness,
+  readiness, late arrivals, add network, export/import, legacy recovery, private label.
+* Fixes found by the full-UI test: concurrent panels overwrote each other's profile updates (now
+  `updateProfile(id, fn)` on the latest stored profile); a sweep onto a network where the Safe was not
+  deployed skipped the divergence rule (Review now blocks it via `deploymentBlocked`); the header
+  button had no accessible name on mobile.
+
+## Final status
+
+### Commands and results (this environment)
+
+| Command | Result |
+| --- | --- |
+| `npm run typecheck` | pass |
+| `npm run lint` | pass (the pre-existing unused-import warning was removed) |
+| `npm test` | 179 passed, 23 skipped (network/fork/local suites are env-gated) |
+| `npm run build` | pass (routes `/`, `/invite`, `/receipt`, `/testnet`, API routes) |
+| `npm run test:local` | 13 passed: the 6 original fork scenarios (incl. EIP-7702 batch) + 7 saved-Safe scenarios, on local canonical chains |
+| `npm run test:e2e:local` (with `PW_CHROMIUM_PATH`) | 14 passed (desktop + mobile): smoke, receipt inspector, two-browser owner verification, full workspace flow |
+| `npm run test:network` | **not run**: public RPCs are blocked by this sandbox's network policy |
+| `npm run test:fork`, `npm run test:fork:aave` | **not run against real forks** for the same reason (the fork *scenarios* ran on local canonical chains instead; Aave cannot, it needs Aave's deployed state) |
+
+Mocked or simulated evidence is labelled in each test file header. Local canonical chains are real
+EVM execution with the real Safe bytecode, but not live-network state, indexers or wallets.
+
+### Skipped or unverified, with reasons
+
+* Live-network reads and forks (network policy). Re-run `npm run test:network` and `npm run test:fork`
+  where public RPCs are reachable.
+* Aave v3 beta against deployed Aave contracts: not run; the flag stays `false`.
+* Real wallets (MetaMask, Rabby, hardware, ERC-1271 contract wallets) for owner acknowledgements and
+  sweeps: not exercised; mocks were used in Playwright.
+* Public-testnet v1.5 checklist (`docs/POC_VALIDATION.md`): needs a human with wallets.
+
+### Remaining limitations
+
+* Saved Safes, invitations and watch state are per browser (export to move them); no relay, no
+  closed-browser monitoring or notifications (out of scope).
+* Changed governance is tracked but never synchronised; production networks with changed governance
+  are blocked because proofs for later-added owners are not collected.
+* Per-network different Safe versions (different addresses) cannot be part of one saved Safe; such
+  networks are blocked at Review with an explanation.
+* Late arrivals rely on the same discovery as v1 (indexer + known tokens + manual imports); vesting
+  or unclaimed entitlements are not detected.
+* Receipts' integrity hash is a commitment, not a signature; onchain attestations are out of scope
+  (the commitment is suitable for a later opt-in design).
+
+### Manual test sequence (short)
+
+1. `npm run build && npm run start`; on `/` connect a funded testnet EOA; select two networks.
+2. Signers: 3 owners, 2-of-3 → "Freeze configuration" → "Invite" owner 2 → open the link in another
+   browser profile, sign, copy the response → paste on device 1 → Verified.
+3. Review → Migrate → Complete → download Receipt (JSON, PDF) → open `/receipt`, paste the JSON.
+4. Saved Safes → Check readiness → Add network (third network) → Deploy.
+5. Send a token to the source → Check for new assets → Review sweep → migrate (no redeployment).
+6. Execute a small Safe transaction in Safe{Wallet}; paste its hash in readiness → Observed.
+
+### Repository state
+
+All work is committed locally on branch `claude/festive-curie-yxncfe`. Nothing has been pushed,
+published or deployed (per instructions).

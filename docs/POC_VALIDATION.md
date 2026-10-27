@@ -104,3 +104,55 @@ npm run test:fork
 ```
 
 Record versions, date and machine in your evidence folder. If RPC keys are missing, say so explicitly — do not claim live reads passed.
+
+---
+
+# v1.5 public-testnet validation (workspace features)
+
+Reported history: the project owner reports successful public-testnet migrations on
+**Sepolia + Chiado** and **Sepolia + Base Sepolia + Chiado** (v1). No hashes or receipts were attached,
+so these stay *user-reported* until the evidence template below is filled in for them.
+
+Automated evidence so far comes from mocks, unit tests and **local Hardhat chains seeded with the
+canonical Safe bytecode** (`npm run test:local`, `npm run test:e2e:local`). None of it replaces the
+public-testnet runs below. Use two browsers or devices and at least two wallets you control.
+
+## Checklist
+
+1. [ ] **Pinning.** Connect a fresh source EOA, select Sepolia + Chiado (+ Base Sepolia), enter 3 owners,
+       2-of-3. Freeze the configuration. Note the commitment and address shown on Signers and Saved Safes.
+2. [ ] **Remote verification.** Invite owner 2 and open the link on a *second device/browser profile*.
+       Confirm the co-owner page recomputes the address ("Recomputed on …") and shows the full owner
+       list. Sign on Chiado. Paste the response on device 1 → "Verified (signed on Gnosis Chiado)".
+       Paste it again → "already imported", still 1 verification. Edit the threshold → the invitation shows
+       "Invalid (configuration changed)"; restore it and invite again.
+3. [ ] **Negative invites.** Import a response after editing one character of its JSON (rejected);
+       sign with the wrong account (rejected); revoke an invitation, then import its response (rejected).
+4. [ ] **Migration.** Run sequentially on two networks. Export the receipt JSON and PDF. Inspect the
+       JSON at `/receipt` ("Integrity hash matches"), then edit one amount and inspect again ("does NOT match").
+       Click "Recheck onchain".
+5. [ ] **Reload.** Close the tab, reopen, reconnect: the saved Safe is there with the same commitment.
+       Export the profile, clear site data, import it: same commitment and address.
+6. [ ] **Add network.** From Saved Safes add the remaining network; confirm the same address and that the
+       Safe is verified before it shows as deployed.
+7. [ ] **Late arrival + sweep.** Send a token or some native coin to the source. "Check for new assets"
+       lists it; "Review sweep" goes through Review with *no* deployment for networks where the Safe
+       exists. Ignore an item and check again: it stays ignored.
+8. [ ] **Readiness.** In Safe{Wallet}, execute a small 2-of-3 transaction from the Safe; paste its hash in
+       the readiness panel → "Observed onchain". Paste a plain deposit hash → rejected.
+9. [ ] **Divergence (optional, testnet).** In Safe{Wallet} change the threshold on one network. Re-read
+       governance: "Governance changed". Add network is blocked; a sweep to that network requires
+       accepting the reviewed governance.
+10. [ ] **Batching (optional).** Repeat step 4 with a wallet that reports EIP-5792 atomic batching.
+
+Do not mark a step passed without its evidence row.
+
+## Evidence template
+
+Copy one row per run or check into your evidence folder (or the PR description).
+
+| Date (UTC) | Build commit | Wallet + version | Device/browser | Networks | Strategy | Step | Tx hashes / batch IDs | Receipt hash | Expected | Observed | Pass? |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| | `NEXT_PUBLIC_BUILD_COMMIT` from the receipt | e.g. MetaMask 12.x | | Sepolia, Chiado | sequential | 4 | | `0x…` | | | |
+
+Attach: the receipt JSON and PDF, screenshots of Saved Safes and readiness, and the co-owner page.
