@@ -148,3 +148,25 @@ attached, so they are recorded as user-reported runs only.
   only for receipts whose hash matches.
 * Build provenance: `NEXT_PUBLIC_BUILD_COMMIT` / `NEXT_PUBLIC_APP_VERSION` injected by `next.config.ts`
   (unknown stays `null`). `/invite` is served with `Referrer-Policy: no-referrer`.
+
+### Phase 4: add a network to a saved Safe (done)
+
+* `src/lib/services/chain-extension.ts` (`assessExtension`, `applyAssessment`) +
+  `src/components/add-network-panel.tsx` on the Saved Safes screen.
+* Uses only the pinned recipe (`resolvePinnedTarget`): canonical code hashes on the target network,
+  factory creation-code hash, offline CREATE2 address = recorded address, Protocol Kit cross-check,
+  then inspection of the address. Outcomes: deploy (nothing there), reuse (matching original
+  configuration, recorded without a transaction), blocked (changed configuration at the address,
+  foreign contract, incompatible network, unreadable network).
+* Governance: every known deployment is re-read first; any change from the original owners,
+  threshold or security settings, or any read failure, blocks routine extension with an explanation
+  (the recipe would install the ORIGINAL owners). No owner synchronisation in v1.5; the user can
+  create a separate Safe through the normal flow. Fresh observations are stored per network.
+* Deployment-only runs reuse the normal planner/executor (`purpose: "extension"`), so gas reserve,
+  simulation, receipt tracking, reconciliation and post-deployment verification all apply; the
+  panel shows the wallet confirmations and the gas reserve.
+* Evidence (local canonical chains, `tests/integration/local-chain.test.ts`): create on Sepolia →
+  reload + export/import → extend to Chiado at the same address; reuse of a third-party deployment on
+  Base Sepolia; divergence (threshold changed via storage) blocks; conflicting contract blocks;
+  network without the pinned singleton is `incompatible` with no renegotiation; tampered recipe
+  rejected.
