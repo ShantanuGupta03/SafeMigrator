@@ -15,6 +15,8 @@ import { isAutoSelectable, isManuallySelectable, isPreselectable } from "@/lib/s
 import { parseAddressInput } from "@/lib/services/signer-configuration";
 import { cn } from "@/lib/utils";
 import { withoutChain, withoutChains } from "@/lib/services/selection";
+import { AssetAmountControl, intentForDraft, setIntent } from "../asset-amount-control";
+import { GasRetentionPanel } from "../gas-retention-panel";
 import { isFullyCompleted, useAppState } from "../app-state";
 import { AddressChip, ChainIcon, ScreenHeading } from "../shared";
 
@@ -171,6 +173,8 @@ export function DiscoverScreen() {
       </div>
 
       <ManualImportCard />
+
+      <GasRetentionPanel prefs={draft.gasRetention} chainIds={draft.selectedChains} onChange={(gasRetention) => setDraft((d) => ({ ...d, gasRetention }))} />
 
       <div className="sticky bottom-4 z-10 rounded-2xl bg-card/95 px-4 py-3 shadow-card backdrop-blur">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3">
@@ -344,7 +348,7 @@ function AssetRow({
   selected: boolean;
   onToggle: (a: DiscoveredAsset) => void;
 }) {
-  const { setDraft } = useAppState();
+  const { draft, setDraft } = useAppState();
   const selectable = gateEnabled && isManuallySelectable(a.classification) && (a.classification !== "suspicious" || acknowledged);
   return (
     <div className={cn("flex flex-wrap items-start gap-3 p-3 text-sm sm:flex-nowrap", !selectable && "bg-muted/40")}>
@@ -367,6 +371,12 @@ function AssetRow({
             <ShieldAlert className="size-3.5" /> I understand the risk — allow selecting this asset
           </button>
         )}
+        <AssetAmountControl
+          asset={a}
+          selected={selected}
+          intent={intentForDraft(draft.transferIntents, a)}
+          onIntent={(intent) => setDraft((d) => ({ ...d, transferIntents: setIntent(d.transferIntents, a.id, intent) }))}
+        />
       </div>
       <div className="text-right">
         <p className="font-mono font-medium">{a.standard === "erc721" ? `#${a.tokenId}` : formatAmount(a.balance, a.decimals)}</p>

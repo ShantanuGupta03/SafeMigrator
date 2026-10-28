@@ -12,7 +12,8 @@ import { formatAmount, formatFee } from "@/lib/domain/amounts";
 import type { SafeProfile } from "@/lib/domain/profile";
 import { applyAssessment, assessExtension, type ExtensionAssessment } from "@/lib/services/chain-extension";
 import { assembleChainPlan, buildActions, createMigration, needsDeploymentFor, preflightChain, type ChainPlan } from "@/lib/services/migration-planning";
-import { isPinned } from "@/lib/services/safe-profile";
+import { profileAllowsNetworkDeploy } from "@/lib/domain/destination";
+import { isImportedExistingProfile, isPinned } from "@/lib/services/safe-profile";
 import { safeConfigHash } from "@/lib/services/signer-configuration";
 import { useAppState } from "./app-state";
 import { isCurrentVerification } from "./hooks/use-safe-config";
@@ -36,7 +37,18 @@ export function AddNetworkPanel({ profile, onUpdate }: { profile: SafeProfile; o
   const [error, setError] = useState<string | null>(null);
   const isSource = !!address && !!source && address.toLowerCase() === profile.source.toLowerCase();
 
-  if (!isPinned(profile)) return null;
+  if (!isPinned(profile)) {
+    if (isImportedExistingProfile(profile)) {
+      return (
+        <p className="text-xs text-muted-foreground">
+          This Safe was imported as an existing address. Adding a network with a new deployment requires a verified deployment recipe; use a Safe created through this app, or deploy
+          on that network outside the app and record it manually.
+        </p>
+      );
+    }
+    return null;
+  }
+  if (!profileAllowsNetworkDeploy(profile.destinationKind ?? "created")) return null;
   if (options.length === 0) return <p className="text-xs text-muted-foreground">Recorded on every network of this environment.</p>;
 
   const check = async () => {

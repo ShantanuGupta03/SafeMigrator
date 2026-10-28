@@ -17,6 +17,8 @@ import {
   governanceByChain,
   importProfile,
   isPinned,
+  isImportedExistingProfile,
+  isSavedDestinationProfile,
   PROFILE_IMPORT_MAX_BYTES,
   profileTitle,
   recoverLegacyProfile,
@@ -106,6 +108,8 @@ function ProfileCard({ profile: p, active, onUse, onUpdate }: { profile: SafePro
   const [error, setError] = useState<string | null>(null);
   const [label, setLabel] = useState(p.label ?? "");
   const pinned = isPinned(p);
+  const imported = isImportedExistingProfile(p);
+  const saved = isSavedDestinationProfile(p);
   const governance = governanceByChain(p);
 
   const refresh = async () => {
@@ -152,7 +156,7 @@ function ProfileCard({ profile: p, active, onUse, onUpdate }: { profile: SafePro
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {pinned && (
+          {saved && (
             <Button size="sm" onClick={onUse} disabled={active}>
               <FolderOpen /> {active ? "Selected" : "Use this Safe"}
             </Button>
@@ -162,9 +166,9 @@ function ProfileCard({ profile: p, active, onUse, onUpdate }: { profile: SafePro
               {busy === "recover" ? <Loader2 className="animate-spin" /> : <Wrench />} Recover from chain
             </Button>
           )}
-          {pinned && (
-            <Button size="sm" variant="outline" onClick={() => void refresh()} disabled={!!busy || p.deployments.length === 0}>
-              {busy === "refresh" ? <Loader2 className="animate-spin" /> : <RefreshCw />} Re-read governance
+          {pinned && p.deployments.length > 0 && (
+            <Button size="sm" variant="outline" onClick={() => void refresh()} disabled={!!busy}>
+              {busy === "refresh" ? <Loader2 className="animate-spin" /> : <RefreshCw />} Check owners and settings
             </Button>
           )}
           <Button size="sm" variant="outline" onClick={() => downloadFile(`safe-profile-${p.id.slice(0, 8)}.json`, exportProfile(p))}>
@@ -236,8 +240,13 @@ function ProfileCard({ profile: p, active, onUse, onUpdate }: { profile: SafePro
         </div>
 
         {pinned && <ReadinessPanel profile={p} onUpdate={onUpdate} />}
-        {pinned && <LateArrivalsPanel profile={p} onUpdate={onUpdate} />}
+        {saved && <LateArrivalsPanel profile={p} onUpdate={onUpdate} />}
         {pinned && <AddNetworkPanel profile={p} onUpdate={onUpdate} />}
+        {imported && (
+          <Alert variant="info" title="Imported existing Safe">
+            Sweeps and monitoring use this address. Adding a new network with deployment is not available without a pinned deployment recipe.
+          </Alert>
+        )}
 
         <div className="flex flex-wrap items-end gap-2">
           <label className="grid gap-1 text-xs text-muted-foreground">
@@ -259,7 +268,8 @@ function ProfileCard({ profile: p, active, onUse, onUpdate }: { profile: SafePro
 export function ProfileStatusBadge({ profile }: { profile: SafeProfile }) {
   if (profile.status === "needs_recovery") return <Badge variant="warning">Needs recovery</Badge>;
   if (profile.status === "proposed") return <Badge variant="outline">Proposed · not deployed</Badge>;
-  return <Badge variant="success">Pinned</Badge>;
+  if (isImportedExistingProfile(profile)) return <Badge variant="success">Existing Safe saved</Badge>;
+  return <Badge variant="success">Setup saved</Badge>;
 }
 
 function GovernanceBadge({ state, stale }: { state: string; stale: boolean }) {

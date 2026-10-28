@@ -81,6 +81,14 @@ export function ProgressScreen() {
         subtitle="Each network runs on its own. Keep this tab open and approve each request in your wallet; progress is saved after every step."
       />
 
+      {migration.chains.some((c) => c.actions.some((a) => a.error?.code === "insufficient_gas")) && (
+        <Alert variant="warning" title="Source wallet needs more native balance for gas">
+          <p className="text-sm">
+            Send native coin to <AddressChip address={migration.source} className="bg-card" /> on the affected network, then use Retry. Your reviewed amounts and destination are unchanged; exact transfers are not reduced automatically.
+          </p>
+        </Alert>
+      )}
+
       <Card>
         <CardContent className="flex flex-wrap items-center justify-between gap-4 p-5">
           <div className="space-y-1">

@@ -17,6 +17,10 @@ import type {
   SafeContractSet,
   SupportedSafeVersion,
 } from "@/lib/domain/types";
+import type { GasRetentionPrefs } from "@/lib/domain/gas-retention";
+import type { AssetTransferIntents } from "@/lib/domain/transfer-intent";
+import { intentForAsset, defaultMaxIntent } from "@/lib/domain/transfer-intent";
+import { nativeSpendableForPlanning, plannedAmountForAsset } from "./amount-resolution";
 import { buildTransferCall, simulateTransfer, type SimulationResult } from "./asset-transfer";
 import {
   estimateCallGas,
@@ -69,7 +73,26 @@ function baseAction(partial: Pick<MigrationAction, "id" | "chainId" | "kind" | "
  * Deterministic ordering: deploy → ERC-20 → ERC-721 → ERC-1155 (grouped per contract) → native last,
  * so native gas stays available for every other step.
  */
-export function buildActions(chainId: number, assets: readonly DiscoveredAsset[], needsDeployment: boolean): MigrationAction[] {
+function fungibleAmounts(
+  asset: DiscoveredAsset,
+  intents: AssetTransferIntents | undefined,
+  nativeSpendableMax?: bigint,
+): { amounts: string[]; transferIntent: MigrationAction["transferIntent"] } {
+  const intent = intentForAsset(intents, asset);
+  const { amount } = plannedAmountForAsset({
+    asset,
+    intents,
+    nativeSpendableMax: asset.standard === "native" ? nativeSpendableMax : undefined,
+  });
+  return { amounts: [amount.toString()], transferIntent: intent };
+}
+
+export function buildActions(
+  chainId: number,
+  assets: readonly DiscoveredAsset[],
+  needsDeployment: boolean,
+  opts?: { intents?: AssetTransferIntents; gasRetention?: GasRetentionPrefs },
+): MigrationAction[] {
   const chain = getChain(chainId);
   const onChain = assets.filter((a) => a.chainId === chainId);
   const out: MigrationAction[] = [];
@@ -87,6 +110,7 @@ export function buildActions(chainId: number, assets: readonly DiscoveredAsset[]
   );
   const sortById = (a: DiscoveredAsset, b: DiscoveredAsset) => a.id.localeCompare(b.id);
   for (const a of onChain.filter((x) => x.standard === "erc20").sort(sortById)) {
+    const f = fungibleAmounts(a, opts?.intents);
     out.push(
       baseAction({
         id: actionId(chainId, "transfer_erc20", a.contract),
@@ -95,7 +119,8 @@ export function buildActions(chainId: number, assets: readonly DiscoveredAsset[]
         label: `Transfer ${a.symbol}`,
         assetIds: [a.id],
         contract: a.contract,
-        amounts: [a.balance],
+        amounts: f.amounts,
+        transferIntent: f.transferIntent,
         decimals: a.decimals,
         symbol: a.symbol,
         protocol: a.protocol ?? null,
@@ -141,6 +166,7 @@ export function buildActions(chainId: number, assets: readonly DiscoveredAsset[]
   }
   const native = onChain.find((x) => x.standard === "native");
   if (native) {
+    const intent = intentForAsset(opts?.intents, native);
     out.push(
       baseAction({
         id: actionId(chainId, "transfer_native"),
@@ -149,6 +175,7 @@ export function buildActions(chainId: number, assets: readonly DiscoveredAsset[]
         label: `Transfer ${chain.nativeSymbol}`,
         assetIds: [native.id],
         amounts: [native.balance],
+        transferIntent: intent.mode === "max" && !opts?.intents?.[native.id] ? defaultMaxIntent(native.balance) : intent,
         decimals: chain.nativeDecimals,
         symbol: chain.nativeSymbol,
       }),
@@ -309,6 +336,8 @@ export function assembleChainPlan(
     dustMultiple?: number;
     /** The user reviewed and accepted the Safe's changed governance on this chain (sweeps into an existing Safe). */
     governanceAccepted?: boolean;
+    gasRetention?: GasRetentionPrefs;
+    transferIntents?: AssetTransferIntents;
   },
 ): ChainPlan {
   const chain = getChain(pre.chainId);
@@ -389,7 +418,16 @@ export function assembleChainPlan(
       );
     }
     if (native) {
-      nativeToSend = spendableNative(pre.nativeBalance, required);
+      const intent =
+        native.transferIntent ??
+        intentForAsset(opts.transferIntents, { id: native.assetIds[0] ?? `${pre.chainId}:native:native`, balance: pre.nativeBalance.toString() });
+      nativeToSend = nativeSpendableForPlanning({
+        chainId: pre.chainId,
+        liveBalance: pre.nativeBalance,
+        remainingExecutionCost: required,
+        gasRetention: opts.gasRetention,
+        intent,
+      });
       const idx = finalActions.findIndex((a) => a.id === native.id);
       if (isDust(nativeToSend, nativeFeeMax, opts.dustMultiple ?? appConfig.dustFeeMultiple)) {
         warnings.push(
@@ -402,7 +440,11 @@ export function assembleChainPlan(
           verification: { expected: "0", safeDelta: null, sourceRemaining: null, note: "Skipped: dust after gas reserve.", blockNumber: null },
         };
       } else {
-        finalActions[idx] = { ...finalActions[idx]!, amounts: [nativeToSend.toString()] };
+        finalActions[idx] = {
+          ...finalActions[idx]!,
+          amounts: [nativeToSend.toString()],
+          transferIntent: intent,
+        };
       }
     }
   }
@@ -483,6 +525,10 @@ export function createMigration(params: {
   purpose?: MigrationPurpose;
   /** Reviewed governance per chain, for existing Safes whose owners or settings changed. */
   expectedGovernance?: Record<number, ExpectedGovernance>;
+  transferIntents?: AssetTransferIntents | null;
+  gasRetention?: GasRetentionPrefs | null;
+  destination?: Migration["destination"];
+  destinationKind?: Migration["destinationKind"];
 }): Migration {
   const chains: ChainMigration[] = params.plans
     .filter((p) => p.executable && p.safeAddress && p.safeVersion && p.contracts)
@@ -518,5 +564,9 @@ export function createMigration(params: {
     profileId: params.profileId ?? null,
     deploymentCommitment: params.deploymentCommitment ?? null,
     purpose: params.purpose ?? "migration",
+    transferIntents: params.transferIntents ?? null,
+    gasRetention: params.gasRetention ?? null,
+    destination: params.destination ?? null,
+    destinationKind: params.destinationKind ?? null,
   };
 }

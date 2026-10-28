@@ -1,6 +1,7 @@
 "use client";
 
 import { ArrowRight, KeyRound, Loader2, ShieldCheck, Wallet } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useConnect, useConnection, useConnectors } from "wagmi";
 import { Alert } from "@/components/ui/alert";
@@ -66,6 +67,11 @@ export function ConnectScreen() {
         </p>
         <h1 className="text-special font-medium md:text-hero">Your assets deserve more than one key.</h1>
         <p className="mx-auto max-w-2xl text-hero-body text-muted-foreground">Move assets from your existing wallet into a multisignature Safe.</p>
+        <p className="text-sm">
+          <Link href="/assess" className="font-medium underline underline-offset-2">
+            Check a wallet without connecting
+          </Link>
+        </p>
       </div>
 
       <Card className="w-full max-w-[440px]">

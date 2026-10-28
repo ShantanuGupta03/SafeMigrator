@@ -1,6 +1,8 @@
 import { decodeFunctionResult, encodeFunctionData, getAddress, type Address, type Hex, type PublicClient, type TransactionReceipt } from "viem";
 import { erc1155Abi, erc20Abi, erc721Abi } from "@/lib/abis";
 import type { ActionVerification, MigrationAction } from "@/lib/domain/types";
+import { intentForAction, refreshFungibleAmounts } from "./amount-resolution";
+import type { AssetTransferIntents } from "@/lib/domain/transfer-intent";
 import type { CallLike } from "./gas-estimation";
 import { readErc1155Balances, readErc20Balance, readErc721Owner } from "./onchain-verification";
 
@@ -90,11 +92,17 @@ export async function refreshTransferAmounts(
   action: MigrationAction,
   source: Address,
   safe: Address,
-): Promise<RefreshResult> {
+  opts?: { intents?: AssetTransferIntents; spendableMax?: bigint },
+): Promise<RefreshResult & { blocked?: string | null }> {
   switch (action.kind) {
     case "transfer_erc20": {
       const bal = await readErc20Balance(client, action.contract!, source);
-      return { amounts: [bal.toString()], alreadyInSafe: false, nothingToMove: bal === 0n };
+      const intent = action.transferIntent ?? intentForAction(opts?.intents, undefined, action);
+      const preview = BigInt(action.previewAmounts?.[0] ?? action.amounts[0] ?? "0");
+      const spendable = opts?.spendableMax ?? bal;
+      const r = refreshFungibleAmounts({ intent, previewAmount: preview, liveBalance: bal, spendableMax: spendable });
+      if (r.blocked) return { amounts: r.amounts, alreadyInSafe: false, nothingToMove: BigInt(r.amounts[0] ?? "0") === 0n, blocked: r.blocked };
+      return { amounts: r.amounts, alreadyInSafe: false, nothingToMove: BigInt(r.amounts[0] ?? "0") === 0n };
     }
     case "transfer_erc721": {
       const owner = await readErc721Owner(client, action.contract!, BigInt(action.tokenIds[0]!));

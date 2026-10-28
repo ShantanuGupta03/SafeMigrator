@@ -253,6 +253,63 @@ describe.runIf(run)("saved Safe: late arrivals and sweeps (local canonical chain
   }, 180_000);
 });
 
+describe.runIf(run)("exact partial native transfer (local canonical chains)", () => {
+  it("moves an exact native amount and leaves the remainder in the source", async () => {
+    const { source, profile } = await freshProfile();
+    const p = await deployOnly(profile, SEPOLIA, source);
+    const client = clientFor(SEPOLIA);
+    const balance = await client.getBalance({ address: source.address });
+    const exact = parseEther("5");
+    const assetId = `${SEPOLIA}:native:native`;
+    const assets = [
+      {
+        id: assetId,
+        chainId: SEPOLIA,
+        standard: "native" as const,
+        contract: null,
+        tokenId: null,
+        name: "Ether",
+        symbol: "ETH",
+        decimals: 18,
+        balance: balance.toString(),
+        usdValue: null,
+        imageUrl: null,
+        classification: "transferable" as const,
+        flags: [],
+        reasons: [],
+        sources: ["rpc" as const],
+        verifiedOnchain: true,
+      },
+    ];
+    const transferIntents = { [assetId]: { mode: "exact" as const, amount: exact.toString() } };
+    const target = await resolvePinnedTarget(SEPOLIA, client, p);
+    const actions = buildActions(SEPOLIA, assets, needsDeploymentFor(target), { intents: transferIntents });
+    const pre = await preflightChain({ client, source: source.address, config: p.original, target, actions, capability: undefined });
+    const plan = assembleChainPlan(pre, actions, { verifiedOwnerCount: 0, threshold: 2, walletChainId: SEPOLIA, transferIntents, gasRetention: { applyToAllNetworks: false, defaultEnabled: false, perChain: {} } });
+    expect(plan.blockers).toEqual([]);
+    const native = plan.actions.find((a) => a.kind === "transfer_native")!;
+    expect(native.amounts[0]).toBe(exact.toString());
+    const m = createMigration({
+      id: `exact-native-${Date.now()}`,
+      source: source.address,
+      environment: "testnet",
+      safeConfig: p.original,
+      verifiedOwners: [],
+      plans: [plan],
+      profileId: p.id,
+      deploymentCommitment: p.commitment,
+      transferIntents,
+    });
+    const done = await execute(m, walletFor(source));
+    expect(done.chains.map(chainOutcome)).toEqual(["completed"]);
+    const safeBal = await client.getBalance({ address: p.safeAddress! });
+    expect(safeBal).toBeGreaterThanOrEqual(exact);
+    const sourceAfter = await client.getBalance({ address: source.address });
+    expect(sourceAfter).toBeLessThan(balance - exact);
+    expect(sourceAfter).toBeGreaterThan(0n);
+  }, 120_000);
+});
+
 describe.runIf(run)("saved Safe: outgoing-transaction evidence (local canonical chains)", () => {
   it("accepts only a successful execution by the Safe itself", async () => {
     const { verifyOutgoingSafeTx } = await import("@/lib/services/readiness");

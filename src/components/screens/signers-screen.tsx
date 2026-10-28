@@ -16,6 +16,9 @@ import { looksLikeEns, MAX_OWNERS, parseAddressInput, resolveEns, signerWarnings
 import { cn, shortAddress } from "@/lib/utils";
 import { emptySigner, useAppState } from "../app-state";
 import { isCurrentVerification, usePinnedProfile, useSafeConfig, useSafeTargets, useVerifiedOwners } from "../hooks/use-safe-config";
+import { buildSafeConfig } from "@/lib/services/signer-configuration";
+import { inspectSafe } from "@/lib/services/onchain-verification";
+import { DestinationChoicePanel } from "../destination-choice-panel";
 import { OwnerVerificationPanel } from "../owner-verification-panel";
 import { AddressChip, ChainLabel, ScreenHeading } from "../shared";
 
@@ -45,6 +48,31 @@ export function SignersScreen() {
   const pinnedProfile = usePinnedProfile();
   const chainIds = selection.chainIds;
   const targets = useSafeTargets(config, chainIds);
+  const loadOwnersFromExisting = async () => {
+    if (draft.destination?.kind !== "existing_safe") return;
+    const chainId = chainIds[0] ?? draft.selectedChains[0];
+    if (!chainId) return;
+    try {
+      const insp = await inspectSafe(getPublicClient(chainId), draft.destination.address);
+      if (!insp.isSafe || !insp.owners.length) return;
+      const owners = buildSafeConfig(insp.owners, insp.threshold, "0").owners;
+      setDraft((d) => ({
+        ...d,
+        threshold: insp.threshold,
+        signers: owners.map((address, slot) => ({
+          slot,
+          input: address,
+          address,
+          ensName: null,
+          kind: source && address.toLowerCase() === source.toLowerCase() ? ("connected_eoa" as const) : ("independent_wallet" as const),
+          label: source && address.toLowerCase() === source.toLowerCase() ? "Connected wallet" : `Owner ${slot + 1}`,
+          verification: d.signers.find((s) => s.address?.toLowerCase() === address.toLowerCase())?.verification ?? null,
+        })),
+      }));
+    } catch {
+      /* user can still configure manually */
+    }
+  };
   const owners = draft.signers.length;
   const warnings = signerWarnings(
     draft.signers.map((s) => ({ ...s, verification: isCurrentVerification(s.verification, configHash, pinnedProfile?.commitment ?? null) ? s.verification : null })),
@@ -73,6 +101,18 @@ export function SignersScreen() {
   return (
     <div className="space-y-8">
       <ScreenHeading title="Choose who controls your Safe." subtitle={describeThreshold(draft.threshold, owners)} />
+
+      {!pinnedProfile && (
+        <DestinationChoicePanel
+          kind={draft.destinationKind}
+          existingInput={draft.existingSafeInput}
+          config={config}
+          onChange={({ kind, existingInput, destination }) =>
+            setDraft((d) => ({ ...d, destinationKind: kind, existingSafeInput: existingInput, destination }))
+          }
+          onLoadOwners={() => void loadOwnersFromExisting()}
+        />
+      )}
 
       <ThresholdDiagram signers={draft.signers} verified={verified} threshold={draft.threshold} onThreshold={setThreshold} />
 

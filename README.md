@@ -28,6 +28,10 @@ changes so the README stays accurate.
 
 ## Status
 
+### V2 iteration (in progress)
+
+Partial amounts, assessment, existing-Safe profiles, completion checklist, gas guidance, and CI are documented in [docs/V2_IMPLEMENTATION.md](docs/V2_IMPLEMENTATION.md). Legacy migration records remain readable.
+
 ### New in v1.5 (migration workspace)
 
 Details, decisions and evidence: [docs/V1_5_IMPLEMENTATION.md](docs/V1_5_IMPLEMENTATION.md).

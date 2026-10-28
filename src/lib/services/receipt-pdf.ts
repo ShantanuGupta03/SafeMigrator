@@ -274,7 +274,13 @@ export async function renderReceiptPdf(r: Receipt): Promise<Uint8Array> {
     w.y -= 4;
     for (const a of c.actions.filter((x) => x.kind !== "deploy_safe")) {
       w.text(`${a.label} - ${STATUS_TEXT[a.status] ?? a.status}`, { font: "bold", gap: 0 });
-      const planned = a.display.planned ? `${a.display.planned} (${a.amounts.plannedRaw.join(", ")} raw)` : a.amounts.plannedRaw.join(", ");
+      const intent =
+        a.amounts.intentMode === "exact" && a.amounts.requestedRaw?.length
+          ? `intent: exact ${a.amounts.requestedRaw.join(", ")} raw · `
+          : a.amounts.intentMode === "max" && a.amounts.reviewedCeilingRaw
+            ? `intent: max ceiling ${a.amounts.reviewedCeilingRaw} raw · `
+            : "";
+      const planned = a.display.planned ? `${intent}${a.display.planned} (${a.amounts.plannedRaw.join(", ")} raw)` : `${intent}${a.amounts.plannedRaw.join(", ")}`;
       const verified = a.amounts.verifiedDeltaRaw !== null ? `${a.display.verified ?? a.amounts.verifiedDeltaRaw} (${a.amounts.verifiedDeltaRaw} raw, evidence: ${a.evidence ?? "unknown"})` : "not verified";
       w.text(`Planned ${planned}. Verified at the Safe: ${verified}.`, { indent: 10 });
       if (a.note) w.text(a.note, { indent: 10, color: MUTED });

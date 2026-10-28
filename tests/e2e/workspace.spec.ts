@@ -62,7 +62,7 @@ test("migrate, export receipts, sweep a late arrival and add a network from a sa
 
   // Saved Safe: pinned, deployed on two networks, readiness observed.
   await page.getByRole("button", { name: /Saved Safes/ }).click();
-  await expect(page.getByText("Pinned", { exact: true })).toBeVisible();
+  await expect(page.getByText("Setup saved", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /Check readiness/ }).click();
   await expect(page.getByText(/Gnosis Chiado: original owners and threshold/)).toBeVisible({ timeout: 60_000 });
 

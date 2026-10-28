@@ -5,6 +5,9 @@ import type { Address } from "viem";
 import { getPublicClient } from "@/lib/chains/clients";
 import { chainsForEnvironment } from "@/lib/chains/registry";
 import type { SafeProfile } from "@/lib/domain/profile";
+import type { MigrationDestination, ProfileDestinationKind } from "@/lib/domain/destination";
+import { defaultGasRetention, type GasRetentionPrefs } from "@/lib/domain/gas-retention";
+import type { AssetTransferIntents } from "@/lib/domain/transfer-intent";
 import type { Environment, Migration, NetworkDiscovery, SignerSlot } from "@/lib/domain/types";
 import { discoverNetwork, fetchIndexerViaApi, type ManualImport } from "@/lib/services/discovery/asset-discovery";
 import { enrichWithAdapters } from "@/lib/services/protocols";
@@ -12,6 +15,7 @@ import { effectiveSelection, importsForChains, type EffectiveSelection } from "@
 import { syncProfileWithMigration } from "@/lib/services/safe-profile";
 import { DEFAULT_THRESHOLD } from "@/lib/services/signer-configuration";
 import { chainOutcome, hasInFlightActions, migrationReducer, type MigrationEvent } from "@/lib/state/machine";
+import { clearAssessmentDraft, loadAssessmentDraft } from "@/lib/state/assessment-draft";
 import { archiveMigration, draftKey, loadMigration, loadMigrationHistory, loadTestnetImports, saveMigration, clearMigration } from "@/lib/state/persistence";
 import type { OwnerInvite } from "@/lib/services/owner-invites";
 import { loadInvites, loadProfiles, saveInvites, saveProfiles, upsertProfile, withLegacyProfiles, type LoadedProfiles } from "@/lib/state/profile-store";
@@ -35,6 +39,13 @@ export interface Draft {
   usedNonces: string[];
   /** Saved Safe profile this draft works with (v1.5+). Null starts a new Safe. */
   profileId: string | null;
+  transferIntents: AssetTransferIntents;
+  gasRetention: GasRetentionPrefs;
+  destinationKind: ProfileDestinationKind;
+  /** Set when destination is chosen; new Safe config is filled from signers step. */
+  destination: MigrationDestination | null;
+  /** User input for importing an existing Safe address or ENS name. */
+  existingSafeInput: string;
 }
 
 export function defaultSigners(): SignerSlot[] {
@@ -62,12 +73,17 @@ export function defaultDraft(environment: Environment = "testnet"): Draft {
     saltNonce: null,
     usedNonces: [],
     profileId: null,
+    transferIntents: {},
+    gasRetention: defaultGasRetention(chainsForEnvironment(environment).map((c) => c.id)),
+    destinationKind: "created",
+    destination: null,
+    existingSafeInput: "",
   };
 }
 
 /** Owners, threshold and imports carry over (same Safe); the asset selection belongs to one run. */
 function forNewRun(d: Draft): Draft {
-  return { ...d, selectedAssetIds: [], acknowledgedSuspicious: [] };
+  return { ...d, selectedAssetIds: [], acknowledgedSuspicious: [], transferIntents: {} };
 }
 
 export function isFullyCompleted(m: Migration): boolean {
@@ -205,9 +221,23 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       setDraftState((current) => {
         const saved = storedDraft ?? current;
         const base = completed ? forNewRun(saved) : saved;
-        const known = new Set(base.manualImports.map(importKey));
+        const assessed = loadAssessmentDraft(localStorage, a);
+        const merged = assessed
+          ? {
+              ...base,
+              environment: assessed.environment,
+              selectedChains: assessed.selectedChains,
+              selectedAssetIds: assessed.selectedAssetIds,
+              transferIntents: assessed.transferIntents,
+              gasRetention: assessed.gasRetention,
+              destination: assessed.destination,
+              destinationKind: assessed.destination.kind === "existing_safe" ? ("imported_existing" as const) : ("created" as const),
+            }
+          : base;
+        const known = new Set(merged.manualImports.map(importKey));
         const extra = testnetImports.filter((m) => !known.has(importKey(m)));
-        return extra.length ? { ...base, manualImports: [...base.manualImports, ...extra] } : base;
+        if (assessed) clearAssessmentDraft(localStorage, a);
+        return extra.length ? { ...merged, manualImports: [...merged.manualImports, ...extra] } : merged;
       });
       dispatch({ type: "HYDRATE", migration: stored });
       if (!stored || completed) setStep("discover");

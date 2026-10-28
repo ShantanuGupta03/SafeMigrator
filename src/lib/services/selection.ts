@@ -1,3 +1,4 @@
+import type { AssetTransferIntents } from "@/lib/domain/transfer-intent";
 import type { DiscoveredAsset, NetworkDiscovery } from "@/lib/domain/types";
 import type { ManualImport } from "./discovery/asset-discovery";
 import { isManuallySelectable } from "./discovery/classification";
@@ -88,9 +89,16 @@ export function importsForChains(imports: readonly ManualImport[], chainIds: rea
 }
 
 /** A stable key for "the inputs a preflight was computed from"; any change invalidates it. */
-export function selectionKey(sel: EffectiveSelection): string {
-  return sel.assets
+export function selectionKey(sel: EffectiveSelection, intents?: AssetTransferIntents): string {
+  const base = sel.assets
     .map((a) => `${a.id}=${a.balance}`)
     .sort()
     .join("|");
+  if (!intents || !Object.keys(intents).length) return base;
+  const intentPart = Object.entries(intents)
+    .filter(([id]) => sel.assetIds.includes(id))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([id, i]) => (i.mode === "exact" ? `${id}:e:${i.amount}` : `${id}:m:${i.ceiling}`))
+    .join("|");
+  return `${base}::${intentPart}`;
 }

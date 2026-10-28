@@ -12,6 +12,8 @@ import { formatAmount, formatFee, sumBigInt, toBigInt } from "@/lib/domain/amoun
 import type { ChainMigration, Migration, NetworkDiscovery, SafeInspection } from "@/lib/domain/types";
 import { discoverNetwork, fetchIndexerViaApi, type ManualImport } from "@/lib/services/discovery/asset-discovery";
 import { compareSafeToConfig, inspectSafe } from "@/lib/services/onchain-verification";
+import { exportProfile } from "@/lib/services/safe-profile";
+import { CompletionChecklistPanel } from "../completion-checklist-panel";
 import { buildReceipt, receiptToJson } from "@/lib/services/receipt";
 import { chainOutcome, hasInFlightActions, migrationOutcome, SUCCESS_STATUSES } from "@/lib/state/machine";
 import { useAppState } from "../app-state";
@@ -42,7 +44,7 @@ export function appBuild() {
 }
 
 export function CompleteScreen() {
-  const { migration, draft, setStep, startNewMigration } = useAppState();
+  const { migration, draft, setStep, startNewMigration, activeProfile } = useAppState();
   const [nonce, setNonce] = useState(0);
   const [result, setResult] = useState<{ key: string; live: Record<number, LiveChainResult>; observedAt: number } | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -150,6 +152,34 @@ export function CompleteScreen() {
           </p>
         </Alert>
       )}
+
+      {activeProfile && (
+        <Alert variant="info" title="Back up this workspace">
+          <p className="text-sm">
+            Your saved Safe and run history live in this browser only. Export the profile JSON before clearing site data — onchain assets are unaffected, but local records would be
+            lost.
+          </p>
+          <Button size="sm" className="mt-2" variant="outline" onClick={() => downloadFile(`safe-profile-${activeProfile.id.slice(0, 8)}.json`, exportProfile(activeProfile))}>
+            <Download /> Export saved setup
+          </Button>
+        </Alert>
+      )}
+
+      <CompletionChecklistPanel
+        migration={migration}
+        live={
+          result
+            ? Object.fromEntries(
+                Object.entries(live).map(([id, l]) => [id, { observedAt: result.observedAt, inspection: l.inspection, issues: l.issues, safeHoldings: l.safeHoldings, remaining: l.remaining, error: l.error }]),
+              )
+            : null
+        }
+        onProgress={() => setStep("progress")}
+        onRetry={() => setStep("progress")}
+        onReceiptJson={exportReceipt}
+        onReceiptPdf={() => void exportPdf()}
+        onSweep={() => startNewMigration()}
+      />
 
       {!allCompleted && (
         <Alert variant="warning" title="Incomplete migration">

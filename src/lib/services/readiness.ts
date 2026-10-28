@@ -96,7 +96,7 @@ export function assessReadiness(input: ReadinessInput): ReadinessItem[] {
   if (deployed.length === 0) deployment.detail.push("Not deployed on any network yet.");
   for (const g of deployed) {
     const s = g.snapshot;
-    if (!s) deployment.detail.push(`${fmtChain(g.chainId)}: deployed, not yet observed. Re-read governance.`);
+    if (!s) deployment.detail.push(`${fmtChain(g.chainId)}: deployed, not yet observed. Check owners and settings.`);
     else if (g.state === "matches_original") deployment.detail.push(`${fmtChain(g.chainId)}: original owners and threshold, no modules or guard, official contracts (block ${s.blockNumber}${g.stale ? ", observation older than 24 h" : ""}).`);
     else deployment.detail.push(`${fmtChain(g.chainId)}: changed since deployment: ${s.issues.join(" ")}`);
   }

@@ -169,7 +169,7 @@ export function OwnerVerificationPanel({ config, commonVersion, scopeChainIds, t
         </CardHeader>
         <CardContent className="space-y-3">
           <Button onClick={() => void freeze()} disabled={!config || !targetsReady || !commonVersion || busy === "freeze"}>
-            {busy === "freeze" ? <Loader2 className="animate-spin" /> : <Lock />} Freeze configuration for verification
+            {busy === "freeze" ? <Loader2 className="animate-spin" /> : <Lock />} Confirm setup for verification
           </Button>
           {!config && <p className="text-xs text-muted-foreground">Enter every owner first.</p>}
           {message && <Alert variant={message.variant}>{message.text}</Alert>}

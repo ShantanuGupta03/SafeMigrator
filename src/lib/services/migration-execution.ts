@@ -14,7 +14,8 @@ import {
 import { validateMigrationOwnerProofs } from "./owner-readiness";
 import { adapterFor, interpretWithAdapter } from "./protocols";
 import { classifySubmissionError } from "./submission-errors";
-import { estimateCallGas, estimateL1DataFee, getFeeQuote, isDust, maxCost, spendableNative, type FeeQuote } from "./gas-estimation";
+import { nativeSpendableForPlanning } from "./amount-resolution";
+import { estimateCallGas, estimateL1DataFee, getFeeQuote, isDust, maxCost, type FeeQuote } from "./gas-estimation";
 import { compareSafeToConfig, compareSafeToGovernance, inspectSafe } from "./onchain-verification";
 import { buildDeploymentTransaction, deploymentTargetAddress } from "./safe-deployment";
 import {
@@ -583,7 +584,7 @@ async function prepareTransfers(deps: ExecutorDeps, chainId: number): Promise<Pr
   const transfers = c.actions.filter((a) => a.kind !== "deploy_safe" && a.kind !== "transfer_native" && a.status === "planned");
 
   for (const a of transfers) {
-    const refreshed = await refreshTransferAmounts(client, a, m.source, c.safeAddress);
+    const refreshed = await refreshTransferAmounts(client, a, m.source, c.safeAddress, { intents: m.transferIntents ?? undefined });
     if (refreshed.alreadyInSafe) {
       patch(deps, chainId, a.id, {
         status: "verified",
@@ -617,6 +618,14 @@ async function prepareTransfers(deps: ExecutorDeps, chainId: number): Promise<Pr
           },
         });
       }
+      continue;
+    }
+    if (refreshed.blocked) {
+      patch(deps, chainId, a.id, {
+        status: "needs_attention",
+        amounts: refreshed.amounts,
+        error: fail("amount_changed", refreshed.blocked),
+      });
       continue;
     }
     const preview = a.previewAmounts ?? a.amounts;
@@ -670,7 +679,13 @@ async function computeNative(deps: ExecutorDeps, chainId: number, otherCosts: bi
   const l1 = await estimateL1DataFee(client, chainId, m.source, probe);
   const own = maxCost(gas, fee, l1);
   const balance = await client.getBalance({ address: m.source });
-  const amount = spendableNative(balance, otherCosts + own);
+  const amount = nativeSpendableForPlanning({
+    chainId,
+    liveBalance: balance,
+    remainingExecutionCost: otherCosts + own,
+    gasRetention: m.gasRetention ?? undefined,
+    intent: native.transferIntent ?? undefined,
+  });
   if (isDust(amount, own)) {
     patch(deps, chainId, native.id, {
       status: "skipped",

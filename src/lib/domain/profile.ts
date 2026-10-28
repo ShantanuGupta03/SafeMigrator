@@ -200,6 +200,9 @@ export const profileStatusSchema = z.enum([
 ]);
 export type ProfileStatus = z.infer<typeof profileStatusSchema>;
 
+export const profileDestinationKindSchema = z.enum(["created", "imported_existing"]);
+export type ProfileDestinationKind = z.infer<typeof profileDestinationKindSchema>;
+
 export const safeProfileSchema = z.object({
   kind: z.literal("safe-migrator/safe-profile"),
   schemaVersion: z.literal(PROFILE_SCHEMA_VERSION),
@@ -210,6 +213,8 @@ export const safeProfileSchema = z.object({
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
   status: profileStatusSchema,
+  /** Created via deployment recipe, or imported as an already-deployed Safe (no cross-network deploy recipe). */
+  destinationKind: profileDestinationKindSchema.optional().default("created"),
   /** Owners, threshold and salt the Safe was created with. Never updated when governance changes. */
   original: safeConfigSchema,
   recipe: deploymentRecipeSchema.nullable(),

@@ -47,7 +47,11 @@ export function withHandledFromMigration(watch: WatchState, m: Migration, now = 
       for (const id of a.assetIds) {
         const retained = a.kind === "transfer_native" && a.status === "skipped";
         // Gas dust left on purpose is baselined at the balance the user reviewed; everything else at what stayed behind.
-        let remaining = a.verification?.sourceRemaining ?? (retained ? (m.scope?.selectedAssets.find((x) => x.assetId === id)?.amount ?? null) : "0");
+        const scoped = m.scope?.selectedAssets.find((x) => x.assetId === id);
+        let remaining = a.verification?.sourceRemaining ?? (retained ? (scoped?.amount ?? null) : "0");
+        if (remaining === "0" && scoped?.transferIntent?.mode === "exact" && a.verification?.sourceRemaining) {
+          remaining = a.verification.sourceRemaining;
+        }
         if (remaining === null) continue;
         // Interest-bearing positions keep accruing on any remainder; baseline 0.1% above it so that alone never alerts.
         if (a.protocol) remaining = (BigInt(remaining) + BigInt(a.amounts[0] ?? "0") / 1000n).toString();
@@ -71,6 +75,11 @@ export function ignoreArrival(watch: WatchState, p: PendingArrival, now = Date.n
     handled: upsertHandled(watch.handled, { assetId: p.assetId, chainId: p.chainId, balance: p.balance, reason: "ignored", at: now }),
     pending: watch.pending.filter((x) => x.assetId !== p.assetId),
   };
+}
+
+/** Removes a handled/ignored baseline so the asset can alert again on the next scan. */
+export function reconsiderHandled(watch: WatchState, assetId: string): WatchState {
+  return { ...watch, handled: watch.handled.filter((h) => h.assetId !== assetId) };
 }
 
 function label(a: DiscoveredAsset): string {

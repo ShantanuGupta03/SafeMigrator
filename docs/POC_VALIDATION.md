@@ -13,6 +13,13 @@ Use this checklist to produce **reproducible evidence** for the public PoC. Curs
 | Residual source balances | Complete → “Still in …” |
 | Outgoing Safe tx with 2 owners | Safe{Wallet} (separate from this app) |
 
+## 0. Optional: assess without connecting
+
+1. Open `/assess`, enter a **public** address and select testnets.
+2. Adjust partial amounts and “Keep gas in this wallet”, then **Connect to continue**.
+3. Connect the **same** address on the home screen — the draft (networks, assets, amounts, gas prefs) should restore.
+4. If the connected wallet differs, the app must not silently retarget; reassess or switch wallet.
+
 ## 1. Fund a disposable EOA
 
 1. Create or use a **throwaway** EOA (not your main wallet).

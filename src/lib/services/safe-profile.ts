@@ -172,6 +172,7 @@ export function createProfile(params: {
     createdAt: now,
     updatedAt: now,
     status: params.status,
+    destinationKind: "created",
     original: { owners: [...params.config.owners], threshold: params.config.threshold, saltNonce: params.config.saltNonce },
     recipe: params.recipe,
     commitment: recipeCommitment(params.recipe),
@@ -189,7 +190,74 @@ export function createProfile(params: {
 }
 
 export function isPinned(p: SafeProfile): p is SafeProfile & { recipe: DeploymentRecipe; commitment: Hex; safeAddress: Address } {
-  return p.status !== "needs_recovery" && !!p.recipe && !!p.commitment && !!p.safeAddress;
+  return p.status !== "needs_recovery" && p.destinationKind !== "imported_existing" && !!p.recipe && !!p.commitment && !!p.safeAddress;
+}
+
+export function isImportedExistingProfile(p: SafeProfile): p is SafeProfile & { safeAddress: Address; destinationKind: "imported_existing" } {
+  return p.status !== "needs_recovery" && (p.destinationKind ?? "created") === "imported_existing" && !!p.safeAddress && !p.recipe;
+}
+
+/** Saved profile that can back sweeps and late-arrival monitoring. */
+export function isSavedDestinationProfile(p: SafeProfile): boolean {
+  return isPinned(p) || isImportedExistingProfile(p);
+}
+
+export function createImportedExistingProfile(params: {
+  id?: string;
+  source: Address;
+  environment: Environment;
+  safeAddress: Address;
+  config: SafeConfig;
+  status?: "proposed" | "active";
+  label?: string | null;
+  now?: number;
+}): SafeProfile {
+  const now = params.now ?? Date.now();
+  const config = buildSafeConfig(params.config.owners, params.config.threshold, params.config.saltNonce);
+  return {
+    kind: "safe-migrator/safe-profile",
+    schemaVersion: PROFILE_SCHEMA_VERSION,
+    id: params.id ?? newProfileId(),
+    source: getAddress(params.source),
+    environment: params.environment,
+    label: params.label ?? null,
+    createdAt: now,
+    updatedAt: now,
+    status: params.status ?? "active",
+    destinationKind: "imported_existing",
+    original: { owners: [...config.owners], threshold: config.threshold, saltNonce: config.saltNonce },
+    recipe: null,
+    commitment: null,
+    safeAddress: getAddress(params.safeAddress),
+    chainNotes: [],
+    deployments: [],
+    snapshots: [],
+    runIds: [],
+    manualImports: [],
+    monitoring: { autoCheck: false, intervalMinutes: 15 },
+    watch: emptyWatchState(),
+    readiness: { outgoing: [], acknowledgedTestTransaction: null },
+    legacy: null,
+  };
+}
+
+export function chooseImportedProfileForRun(params: {
+  profiles: readonly SafeProfile[];
+  source: Address;
+  environment: Environment;
+  safeAddress: Address;
+  config: SafeConfig;
+  now?: number;
+}): { profile: SafeProfile; replaces: string[] } {
+  const addr = getAddress(params.safeAddress);
+  const same = params.profiles.find(
+    (p) => isImportedExistingProfile(p) && p.environment === params.environment && p.safeAddress === addr && p.source.toLowerCase() === params.source.toLowerCase(),
+  );
+  if (same) return { profile: { ...same, status: "active", updatedAt: Date.now() }, replaces: [] };
+  return {
+    profile: createImportedExistingProfile({ source: params.source, environment: params.environment, safeAddress: addr, config: params.config, now: params.now }),
+    replaces: [],
+  };
 }
 
 /** True when the draft configuration is exactly the profile's original configuration. */
@@ -230,6 +298,12 @@ export function parseProfile(raw: unknown, expect?: { source?: Address; environm
 
   if (p.status === "needs_recovery") {
     if (p.recipe || p.commitment || p.safeAddress) return { ok: false, reason: "A profile needing recovery must not carry a recipe." };
+    return { ok: true, profile: p };
+  }
+  const kind = p.destinationKind ?? "created";
+  if (kind === "imported_existing") {
+    if (p.recipe || p.commitment) return { ok: false, reason: "An imported existing Safe profile must not carry a deployment recipe." };
+    if (!p.safeAddress) return { ok: false, reason: "Imported profile is missing the Safe address." };
     return { ok: true, profile: p };
   }
   if (!p.recipe || !p.commitment || !p.safeAddress) return { ok: false, reason: "Pinned profile is missing its deployment recipe." };
@@ -405,15 +479,16 @@ export function governanceByChain(p: SafeProfile, now = Date.now()): ChainGovern
 
 /** Records deployments and verification snapshots a run established. Never removes history. */
 export function syncProfileWithMigration(p: SafeProfile, m: Migration): SafeProfile {
-  if (!isPinned(p) || m.profileId !== p.id) return p;
-  const version = p.recipe.safeVersion;
-  const safeAddress = p.safeAddress;
+  if (m.profileId !== p.id) return p;
+  if (!isPinned(p) && !isImportedExistingProfile(p)) return p;
+  const safeAddress = p.safeAddress!;
+  const version = p.recipe?.safeVersion ?? m.chains.find((c) => c.safeAddress === safeAddress)?.safeVersion ?? "1.3.0";
   let next: SafeProfile = p.runIds.includes(m.id) ? p : { ...p, runIds: [...p.runIds, m.id], status: "active", updatedAt: Date.now() };
   for (const c of m.chains) {
     if (c.safeAddress !== safeAddress) continue;
     const deploy = c.actions.find((a) => a.kind === "deploy_safe");
     const verified = deploy && (deploy.status === "verified" || deploy.status === "skipped");
-    if (verified && c.safeVerification?.isSafe) {
+    if (verified && c.safeVerification?.isSafe && !isImportedExistingProfile(p)) {
       next = withDeployment(next, {
         chainId: c.chainId,
         address: safeAddress,
@@ -422,12 +497,22 @@ export function syncProfileWithMigration(p: SafeProfile, m: Migration): SafeProf
         runId: m.id,
         recordedAt: Date.now(),
       });
+    } else if (isImportedExistingProfile(p) && c.safeVerification?.isSafe) {
+      next = withDeployment(next, {
+        chainId: c.chainId,
+        address: safeAddress,
+        txHash: null,
+        how: "existing",
+        runId: m.id,
+        recordedAt: Date.now(),
+      });
     }
-    const insp = c.safeVerification;
-    if (insp?.hasCode) {
+    const liveInsp = c.safeVerification;
+    if (liveInsp?.hasCode) {
       const known = next.snapshots.find((s) => s.chainId === c.chainId);
-      if (!known || BigInt(known.blockNumber) < BigInt(insp.blockNumber)) {
-        next = withSnapshot(next, snapshotFromInspection(c.chainId, insp, p.original, canonicalContractSet(version)));
+      if (!known || BigInt(known.blockNumber) < BigInt(liveInsp.blockNumber)) {
+        const contracts = canonicalContractSet(version);
+        next = withSnapshot(next, snapshotFromInspection(c.chainId, liveInsp, p.original, contracts));
       }
     }
   }
@@ -483,6 +568,7 @@ export function legacyProfilesFromMigrations(source: Address, environment: Envir
       createdAt: Math.min(...runs.map((m) => m.createdAt)),
       updatedAt: now,
       status: "needs_recovery",
+      destinationKind: "created",
       original: config,
       recipe: null,
       commitment: null,

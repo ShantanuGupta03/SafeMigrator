@@ -82,6 +82,10 @@ const actionSchema = z.object({
   decimals: z.number().int().min(0).max(255),
   /** Exact base units. Display strings are separate and derived. */
   amounts: z.object({
+    /** User intent at review (exact amount or max ceiling), when recorded. */
+    requestedRaw: z.array(raw).max(200).nullable(),
+    intentMode: z.enum(["exact", "max"]).nullable(),
+    reviewedCeilingRaw: raw.nullable(),
     reviewedRaw: z.array(raw).max(200).nullable(),
     plannedRaw: z.array(raw).max(200),
     verifiedDeltaRaw: raw.nullable(),
@@ -188,7 +192,34 @@ export const receiptBodySchema = z.object({
         selectedChainIds: z.array(chainIdSchema).max(50),
         includedChainIds: z.array(chainIdSchema).max(50),
         blockedChains: z.array(z.object({ chainId: chainIdSchema, reasons: z.array(text(1000)).max(20) })).max(50),
-        excludedAssets: z.array(z.object({ assetId: text(300), chainId: chainIdSchema, label: text(200), amountRaw: raw, decimals: z.number().int().min(0).max(255), reason: text(1000).nullable() })).max(500),
+        excludedAssets: z
+          .array(
+            z.object({
+              assetId: text(300),
+              chainId: chainIdSchema,
+              label: text(200),
+              amountRaw: raw,
+              decimals: z.number().int().min(0).max(255),
+              intentMode: z.enum(["exact", "max"]).nullable(),
+              requestedRaw: raw.nullable(),
+              reason: text(1000).nullable(),
+            }),
+          )
+          .max(500),
+        selectedAssets: z
+          .array(
+            z.object({
+              assetId: text(300),
+              chainId: chainIdSchema,
+              label: text(200),
+              amountRaw: raw,
+              decimals: z.number().int().min(0).max(255),
+              intentMode: z.enum(["exact", "max"]).nullable(),
+              requestedRaw: raw.nullable(),
+            }),
+          )
+          .max(500)
+          .nullable(),
         partialAcknowledged: z.boolean(),
         incompleteDiscovery: z.array(z.object({ chainId: chainIdSchema, note: text(1000) })).max(50),
         plannedAt: z.number().int().min(0),
@@ -196,6 +227,12 @@ export const receiptBodySchema = z.object({
       .nullable(),
     chains: z.array(chainSchema).max(50),
     discrepancies: z.array(z.object({ chainId: chainIdSchema, actionId: text(300), label: text(200), expectedRaw: raw, verifiedRaw: raw.nullable(), note: text(1000).nullable() })).max(500),
+    retention: z
+      .object({
+        optionalGasBuffer: z.boolean(),
+        perChainExtraRetainRaw: z.array(z.object({ chainId: chainIdSchema, amountRaw: raw, enabled: z.boolean() })).max(50),
+      })
+      .nullable(),
   }),
   currentState: z
     .object({
@@ -229,6 +266,19 @@ const nul = <T>(v: T | null | undefined): T | null => (v === undefined ? null : 
 const cut = (s: string | null | undefined, n: number): string | null => (s == null ? null : s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const lowerHex = (h: string | null | undefined) => (h ? (h.toLowerCase() as Hex) : null);
 
+function scopeAssetIntent(a: import("@/lib/domain/types").ScopeAsset) {
+  const t = a.transferIntent;
+  return {
+    assetId: a.assetId,
+    chainId: a.chainId,
+    label: cut(a.label, 200)!,
+    amountRaw: a.amount,
+    decimals: a.decimals,
+    intentMode: t?.mode ?? null,
+    requestedRaw: t?.mode === "exact" ? t.amount : t?.mode === "max" ? t.ceiling : null,
+  };
+}
+
 function displayAmount(a: MigrationAction, amounts: readonly string[]): string {
   if (a.kind === "deploy_safe") return "";
   if (a.kind === "transfer_erc721") return `#${a.tokenIds[0] ?? "?"}`;
@@ -236,8 +286,16 @@ function displayAmount(a: MigrationAction, amounts: readonly string[]): string {
   return `${formatAmount(amounts[0] ?? "0", a.decimals)} ${a.symbol}`.trim();
 }
 
+function intentFields(a: MigrationAction) {
+  const t = a.transferIntent;
+  if (!t) return { requestedRaw: null as string[] | null, intentMode: null as "exact" | "max" | null, reviewedCeilingRaw: null as string | null };
+  if (t.mode === "exact") return { requestedRaw: [t.amount], intentMode: "exact" as const, reviewedCeilingRaw: null };
+  return { requestedRaw: null, intentMode: "max" as const, reviewedCeilingRaw: t.ceiling };
+}
+
 function actionRecord(a: MigrationAction) {
   const v = a.verification;
+  const intent = intentFields(a);
   return {
     id: a.id,
     kind: a.kind,
@@ -248,6 +306,7 @@ function actionRecord(a: MigrationAction) {
     symbol: a.symbol,
     decimals: a.decimals,
     amounts: {
+      ...intent,
       reviewedRaw: a.previewAmounts ? [...a.previewAmounts] : null,
       plannedRaw: [...a.amounts],
       verifiedDeltaRaw: nul(v?.safeDelta),
@@ -387,7 +446,8 @@ export function buildReceiptBody(params: {
             selectedChainIds: [...scope.selectedChainIds],
             includedChainIds: [...scope.includedChainIds],
             blockedChains: scope.blockedChains.map((b) => ({ chainId: b.chainId, reasons: b.reasons.slice(0, 20).map((r) => cut(r, 1000)!) })),
-            excludedAssets: scope.excludedAssets.map((a) => ({ assetId: a.assetId, chainId: a.chainId, label: cut(a.label, 200)!, amountRaw: a.amount, decimals: a.decimals, reason: cut(a.reason, 1000) })),
+            excludedAssets: scope.excludedAssets.map((a) => ({ ...scopeAssetIntent(a), reason: cut(a.reason, 1000) })),
+            selectedAssets: scope.selectedAssets.map((a) => scopeAssetIntent(a)),
             partialAcknowledged: scope.partialAcknowledged,
             incompleteDiscovery: scope.incompleteDiscovery.map((d) => ({ chainId: d.chainId, note: cut(d.note, 1000)! })),
             plannedAt: scope.plannedAt,
@@ -395,6 +455,16 @@ export function buildReceiptBody(params: {
         : null,
       chains: m.chains.map(chainRecord),
       discrepancies,
+      retention: m.gasRetention
+        ? {
+            optionalGasBuffer: Object.values(m.gasRetention.perChain).some((c) => c.enabled),
+            perChainExtraRetainRaw: Object.entries(m.gasRetention.perChain).map(([chainId, c]) => ({
+              chainId: Number(chainId),
+              amountRaw: c.extraRetainRaw,
+              enabled: c.enabled,
+            })),
+          }
+        : null,
     },
     currentState: live
       ? {

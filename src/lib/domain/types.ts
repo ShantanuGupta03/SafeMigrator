@@ -1,7 +1,13 @@
 import type { Address, Hex } from "viem";
+import type { GasRetentionPrefs } from "./gas-retention";
+import type { MigrationDestination } from "./destination";
+import type { ProfileDestinationKind } from "./profile";
+import type { AssetTransferIntents, TransferIntent } from "./transfer-intent";
 
 /** All onchain amounts are serialized as base-10 strings of base units (BigInt-safe). */
 export type BigIntString = string;
+
+export type { AssetTransferIntents, TransferIntent, GasRetentionPrefs, MigrationDestination, ProfileDestinationKind };
 
 export type Environment = "testnet" | "mainnet";
 
@@ -287,7 +293,9 @@ export interface MigrationAction {
   /** Token contract (erc20/721/1155). */
   contract: Address | null;
   tokenIds: BigIntString[];
-  /** Planned amounts (re-read from chain right before sending). */
+  /** User-reviewed transfer intent for fungible actions (absent on legacy runs → inferred from preview). */
+  transferIntent?: TransferIntent | null;
+  /** Planned amounts (exact intent: fixed at review; max intent: may shrink within ceiling). */
   amounts: BigIntString[];
   decimals: number;
   symbol: string;
@@ -400,6 +408,11 @@ export interface Migration {
   /** Commitment to the pinned deployment recipe the run used (v1.5+). */
   deploymentCommitment?: Hex | null;
   purpose?: MigrationPurpose;
+  /** Fungible amount intents frozen at review (legacy: inferred when absent). */
+  transferIntents?: AssetTransferIntents | null;
+  gasRetention?: GasRetentionPrefs | null;
+  destination?: MigrationDestination | null;
+  destinationKind?: ProfileDestinationKind | null;
   log: MigrationLogEntry[];
 }
 
@@ -414,6 +427,8 @@ export interface ScopeAsset {
   label: string;
   amount: BigIntString;
   decimals: number;
+  /** Reviewed intent at plan time (null on legacy scope records). */
+  transferIntent?: TransferIntent | null;
   /** Why it is not part of the executable plan (null when included). */
   reason: string | null;
 }

@@ -58,7 +58,16 @@ describe("receipt model", () => {
   it("keeps expected, submitted and verified amounts distinct and reports a partial run prominently", () => {
     const r = receipt();
     const fee = r.record.chains[0]!.actions[1]!;
-    expect(fee.amounts).toEqual({ reviewedRaw: ["1000000"], plannedRaw: ["1000000"], verifiedDeltaRaw: "990000", loggedRaw: "990000", sourceRemainingRaw: "0" });
+    expect(fee.amounts).toEqual({
+      requestedRaw: null,
+      intentMode: null,
+      reviewedCeilingRaw: null,
+      reviewedRaw: ["1000000"],
+      plannedRaw: ["1000000"],
+      verifiedDeltaRaw: "990000",
+      loggedRaw: "990000",
+      sourceRemainingRaw: "0",
+    });
     expect(fee.display).toEqual({ planned: "1 FEE", verified: "0.99 FEE" });
     expect(r.record.discrepancies).toHaveLength(1);
     expect(r.record.outcome).toBe("partial");

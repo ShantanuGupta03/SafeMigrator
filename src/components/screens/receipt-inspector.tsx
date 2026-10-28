@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { getPublicClient } from "@/lib/chains/clients";
 import { findChain } from "@/lib/chains/registry";
-import { formatFee } from "@/lib/domain/amounts";
+import { formatAmount, formatFee } from "@/lib/domain/amounts";
 import { inspectSafe } from "@/lib/services/onchain-verification";
 import { inspectReceipt, outcomeHeadline, RECEIPT_MAX_BYTES, type InspectResult, type Receipt } from "@/lib/services/receipt";
 import { AddressChip, ChainLabel, downloadFile, readFileText, ScreenHeading, TxLink } from "../shared";
@@ -156,6 +156,11 @@ function ReceiptView({ result, recheck, busy, onRecheck }: { result: Extract<Ins
               <span className="font-mono text-xs">{r.record.destination.deploymentCommitment?.slice(0, 14) ?? "unknown"}</span>
             </p>
           </div>
+          {r.record.retention && (
+            <Alert variant="info" title="Gas retention (recorded at migration)">
+              Optional post-migration buffer was {r.record.retention.optionalGasBuffer ? "enabled" : "disabled"} on at least one network. Mandatory execution reserve is always separate.
+            </Alert>
+          )}
           {r.record.scope === null && <Alert variant="warning">This record predates scope tracking: blocked networks and excluded assets are unknown.</Alert>}
           {r.record.scope?.blockedChains.map((b) => (
             <Alert key={b.chainId} variant="warning" title={`Not migrated: ${findChain(b.chainId)?.name ?? b.chainId}`}>
@@ -183,22 +188,36 @@ function ReceiptView({ result, recheck, busy, onRecheck }: { result: Extract<Ins
                     {"error" in now ? `could not read (${now.error})` : now.isSafe ? `${now.threshold} of ${now.owners.length} owners at block ${now.block}` : "no Safe at this address"}
                   </p>
                 )}
-                <ul className="space-y-1">
+                <ul className="space-y-2">
                   {c.actions.map((a) => {
                     const tx = a.txHash ? recheck?.txs[`${c.chainId}:${a.txHash}`] : undefined;
+                    const intent =
+                      a.amounts.intentMode === "exact" && a.amounts.requestedRaw?.length
+                        ? `exact ${formatAmount(BigInt(a.amounts.requestedRaw[0] ?? "0"), a.decimals)} ${a.symbol}`
+                        : a.amounts.intentMode === "max" && a.amounts.reviewedCeilingRaw
+                          ? `max ≤ ${formatAmount(BigInt(a.amounts.reviewedCeilingRaw), a.decimals)} ${a.symbol}`
+                          : null;
                     return (
-                      <li key={a.id} className="flex flex-wrap items-center justify-between gap-2">
-                        <span>
-                          {a.label} <Badge variant={a.status === "verified" || a.status === "skipped" ? "outline" : "warning"}>{a.status.replace(/_/g, " ")}</Badge>
-                        </span>
-                        <span className="flex items-center gap-2">
-                          {a.txHash && <TxLink chainId={c.chainId} hash={a.txHash} />}
-                          {tx && (
-                            <Badge variant={tx.status === "success" ? "success" : "danger"}>
-                              {tx.status === "success" ? <ShieldCheck className="size-3" /> : <ShieldAlert className="size-3" />} {tx.status.replace("_", " ")}
-                            </Badge>
-                          )}
-                        </span>
+                      <li key={a.id} className="space-y-0.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span>
+                            {a.label} <Badge variant={a.status === "verified" || a.status === "skipped" ? "outline" : "warning"}>{a.status.replace(/_/g, " ")}</Badge>
+                          </span>
+                          <span className="flex items-center gap-2">
+                            {a.txHash && <TxLink chainId={c.chainId} hash={a.txHash} />}
+                            {tx && (
+                              <Badge variant={tx.status === "success" ? "success" : "danger"}>
+                                {tx.status === "success" ? <ShieldCheck className="size-3" /> : <ShieldAlert className="size-3" />} {tx.status.replace("_", " ")}
+                              </Badge>
+                            )}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {intent && <span>{intent} · </span>}
+                          planned {a.display.planned || a.amounts.plannedRaw.join(", ")} raw
+                          {a.amounts.verifiedDeltaRaw && ` · verified Δ ${formatAmount(BigInt(a.amounts.verifiedDeltaRaw), a.decimals)}`}
+                          {a.amounts.sourceRemainingRaw && ` · source left ${formatAmount(BigInt(a.amounts.sourceRemainingRaw), a.decimals)}`}
+                        </p>
                       </li>
                     );
                   })}

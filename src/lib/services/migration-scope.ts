@@ -1,15 +1,20 @@
 import { getChain } from "@/lib/chains/registry";
+import type { AssetTransferIntents } from "@/lib/domain/transfer-intent";
+import { intentForAsset } from "@/lib/domain/transfer-intent";
 import type { DiscoveredAsset, MigrationScope, NetworkDiscovery, ScopeAsset, ScopeChain } from "@/lib/domain/types";
 import type { ChainPlan } from "./migration-planning";
 import type { EffectiveSelection } from "./selection";
 
-function scopeAsset(a: DiscoveredAsset, reason: string | null): ScopeAsset {
+function scopeAsset(a: DiscoveredAsset, reason: string | null, intents?: AssetTransferIntents): ScopeAsset {
+  const intent = intentForAsset(intents, a);
+  const amount = intent.mode === "exact" ? intent.amount : a.balance;
   return {
     assetId: a.id,
     chainId: a.chainId,
     label: a.standard === "erc721" || a.standard === "erc1155" ? `${a.name} #${a.tokenId}` : a.symbol,
-    amount: a.balance,
+    amount,
     decimals: a.decimals,
+    transferIntent: intent,
     reason,
   };
 }
@@ -21,13 +26,14 @@ export interface ScopeBuildInput {
   discovery: Readonly<Record<number, NetworkDiscovery | undefined>>;
   partialAcknowledged: boolean;
   plannedAt: number;
+  transferIntents?: AssetTransferIntents;
 }
 
 /** Records what the user selected versus what will execute, for receipts and completion copy. */
 export function buildMigrationScope(input: ScopeBuildInput): MigrationScope {
   const planByChain = new Map(input.plans.map((p) => [p.chainId, p]));
   const included = new Set(input.plans.filter((p) => p.executable).map((p) => p.chainId));
-  const selectedAssets = input.selection.assets.map((a) => scopeAsset(a, included.has(a.chainId) ? null : "Network blocked or not executable."));
+  const selectedAssets = input.selection.assets.map((a) => scopeAsset(a, included.has(a.chainId) ? null : "Network blocked or not executable.", input.transferIntents));
   const blockedChains: ScopeChain[] = [];
   const excludedAssets: ScopeAsset[] = [];
 

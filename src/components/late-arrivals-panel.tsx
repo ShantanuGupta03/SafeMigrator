@@ -12,7 +12,7 @@ import { formatAmount } from "@/lib/domain/amounts";
 import type { PendingArrival, SafeProfile } from "@/lib/domain/profile";
 import type { NetworkDiscovery } from "@/lib/domain/types";
 import { discoverNetwork, fetchIndexerViaApi } from "@/lib/services/discovery/asset-discovery";
-import { applyScan, ignoreArrival, sweepable } from "@/lib/services/late-arrivals";
+import { applyScan, ignoreArrival, reconsiderHandled, sweepable } from "@/lib/services/late-arrivals";
 import { useAppState } from "./app-state";
 import { ChainLabel, timeAgo } from "./shared";
 
@@ -157,6 +157,24 @@ export function LateArrivalsPanel({ profile, onUpdate }: { profile: SafeProfile;
             />
           ))}
         </ul>
+      )}
+      {w.handled.filter((h) => h.reason === "ignored").length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs font-medium text-muted-foreground">Dismissed items</p>
+          <ul className="space-y-1 text-xs">
+            {w.handled
+              .filter((h) => h.reason === "ignored")
+              .slice(0, 8)
+              .map((h) => (
+                <li key={h.assetId} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-card px-2 py-1">
+                  <span className="truncate font-mono">{h.assetId.split(":").slice(-2).join(":")}</span>
+                  <Button size="sm" variant="ghost" onClick={() => onUpdate((cur) => ({ ...cur, watch: reconsiderHandled(cur.watch, h.assetId) }))}>
+                    Reconsider
+                  </Button>
+                </li>
+              ))}
+          </ul>
+        </div>
       )}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <label className="flex flex-wrap items-center gap-2 text-xs">

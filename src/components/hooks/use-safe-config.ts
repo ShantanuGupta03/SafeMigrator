@@ -5,6 +5,7 @@ import { getPublicClient } from "@/lib/chains/clients";
 import { chainsForEnvironment, getChain } from "@/lib/chains/registry";
 import type { SafeProfile } from "@/lib/domain/profile";
 import type { ChainSafeTarget, OwnerVerification, SafeConfig, SupportedSafeVersion } from "@/lib/domain/types";
+import { resolveExistingSafeTarget } from "@/lib/services/existing-destination";
 import { negotiateSafeVersion, resolveChainTarget } from "@/lib/services/safe-deployment";
 import { knownDeploymentGovernance } from "@/lib/services/chain-extension";
 import { isPinned, profileMatchesConfig, resolvePinnedTarget } from "@/lib/services/safe-profile";
@@ -80,7 +81,9 @@ export function useSafeTargets(config: SafeConfig | null, chainIds: number[], no
   const { draft } = useAppState();
   const pinned = usePinnedProfile();
   const [result, setResult] = useState<{ key: string; state: TargetsState } | null>(null);
-  const key = config ? `${safeConfigHash(config)}:${chainIds.join(",")}:${draft.environment}:${pinned?.commitment ?? "-"}:${nonce}` : null;
+  const existing =
+    draft.destinationKind === "imported_existing" && draft.destination?.kind === "existing_safe" ? draft.destination.address.toLowerCase() : null;
+  const key = config ? `${safeConfigHash(config)}:${chainIds.join(",")}:${draft.environment}:${pinned?.commitment ?? "-"}:${existing ?? "-"}:${nonce}` : null;
 
   useEffect(() => {
     if (!config || !key) return;
@@ -88,7 +91,24 @@ export function useSafeTargets(config: SafeConfig | null, chainIds: number[], no
     (async () => {
       let state: TargetsState;
       try {
-        if (pinned) {
+        if (draft.destination?.kind === "existing_safe") {
+          const dest = draft.destination;
+          const entries = await Promise.all(
+            chainIds.map(async (id) => {
+              const address = dest.perChain?.[id] ?? dest.address;
+              const assessed = await resolveExistingSafeTarget({
+                chainId: id,
+                address,
+                environment: draft.environment,
+                client: getPublicClient(id),
+                referenceConfig: config,
+              });
+              return [id, assessed.target] as const;
+            }),
+          );
+          const version = entries.map(([, t]) => t.safeVersion).find(Boolean) ?? null;
+          state = { loading: false, commonVersion: version, targets: Object.fromEntries(entries), error: null, pinnedProfileId: null };
+        } else if (pinned) {
           let entries = await Promise.all(chainIds.map(async (id) => [id, await resolvePinnedTarget(id, getPublicClient(id), pinned)] as const));
           // A new deployment installs the ORIGINAL owners: only allowed while every known deployment still has them.
           const known = pinned.deployments.map((d) => d.chainId);

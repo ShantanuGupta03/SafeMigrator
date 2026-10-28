@@ -22,7 +22,8 @@ import {
   type ChainPreflight,
 } from "@/lib/services/migration-planning";
 import { buildMigrationScope, requiresPartialAck } from "@/lib/services/migration-scope";
-import { chooseProfileForRun, expectedGovernanceFrom, pinRecipe, profileTitle } from "@/lib/services/safe-profile";
+import { chooseProfileForRun, chooseImportedProfileForRun, expectedGovernanceFrom, pinRecipe, profileTitle } from "@/lib/services/safe-profile";
+import { buildSafeConfig } from "@/lib/services/signer-configuration";
 import { getAtomicCapabilities, type ChainCapability, type Eip1193Requester } from "@/lib/services/transaction-capability";
 import { selectionKey } from "@/lib/services/selection";
 import { safeConfigHash } from "@/lib/services/signer-configuration";
@@ -30,6 +31,7 @@ import { useAppState } from "../app-state";
 import { useRunner } from "../hooks/use-runner";
 import { isCurrentVerification, usePinnedProfile, useSafeConfig, useSafeTargets, useVerifiedOwners } from "../hooks/use-safe-config";
 import { AddressChip, ChainLabel, ScreenHeading } from "../shared";
+import { GasDeficitPanel } from "../gas-deficit-panel";
 import { TargetStatus } from "./signers-screen";
 
 const PREFLIGHT_MAX_AGE_MS = 30 * 60 * 1000;
@@ -60,8 +62,8 @@ export function PreviewScreen() {
   // Preflight: capabilities + simulations + gas estimates (all real RPC / wallet calls).
   const ready = !!config && !!source && chainIds.length > 0 && !targets.loading && Object.keys(targets.targets).length > 0;
   const inputs = useMemo(
-    () => [config, source, targets, chainIds, selectionKey(selection), connector, refresh],
-    [config, source, targets, chainIds, selection, connector, refresh],
+    () => [config, source, targets, chainIds, selectionKey(selection, draft.transferIntents), draft.gasRetention, connector, refresh],
+    [config, source, targets, chainIds, selection, draft.transferIntents, draft.gasRetention, connector, refresh],
   );
   const fresh = preflight !== null && preflight.inputs === inputs;
   const [migrateError, setMigrateError] = useState<string | null>(null);
@@ -85,7 +87,10 @@ export function PreviewScreen() {
       const entries = await Promise.all(
         chainIds.map(async (id) => {
           const target = targets.targets[id]!;
-          const actions = buildActions(id, selectedAssets, needsDeploymentFor(target));
+          const actions = buildActions(id, selectedAssets, needsDeploymentFor(target), {
+            intents: draft.transferIntents,
+            gasRetention: draft.gasRetention,
+          });
           const pre = await preflightChain({ client: getPublicClient(id), source, config, target, actions, capability: caps[id] });
           return [id, pre] as const;
         }),
@@ -102,15 +107,17 @@ export function PreviewScreen() {
       chainIds
         .filter((id) => preflights[id])
         .map((id) =>
-          assembleChainPlan(preflights[id]!, buildActions(id, selectedAssets, needsDeploymentFor(targets.targets[id])), {
+          assembleChainPlan(preflights[id]!, buildActions(id, selectedAssets, needsDeploymentFor(targets.targets[id]), { intents: draft.transferIntents, gasRetention: draft.gasRetention }), {
             verifiedOwnerCount: verified.length,
             threshold: draft.threshold,
             strategyOverride: overrides[id],
             walletChainId,
             governanceAccepted: governanceKey(targets.targets[id]) !== null && acceptedGovernance[id] === governanceKey(targets.targets[id]),
+            gasRetention: draft.gasRetention,
+            transferIntents: draft.transferIntents,
           }),
         ),
-    [chainIds, preflights, selectedAssets, targets.targets, verified.length, draft.threshold, overrides, walletChainId, acceptedGovernance],
+    [chainIds, preflights, selectedAssets, targets.targets, verified.length, draft.threshold, draft.transferIntents, draft.gasRetention, overrides, walletChainId, acceptedGovernance],
   );
   const threshold = config?.threshold ?? draft.threshold;
   const ownerCount = config?.owners.length ?? draft.signers.length;
@@ -135,8 +142,9 @@ export function PreviewScreen() {
         discovery,
         partialAcknowledged: partialAck,
         plannedAt: preflight?.plannedAt ?? 0,
+        transferIntents: draft.transferIntents,
       }),
-    [selection, draft.selectedChains, plans, discovery, partialAck, preflight?.plannedAt],
+    [selection, draft.selectedChains, plans, discovery, partialAck, preflight?.plannedAt, draft.transferIntents],
   );
   const needsPartialAck = requiresPartialAck(scopePreview);
   const ownerProofs = useMemo(
@@ -160,8 +168,9 @@ export function PreviewScreen() {
     setStarting(true);
     try {
       // Pin the deployment identity before anything is sent; later runs reuse it verbatim.
+      const usingExisting = draft.destination?.kind === "existing_safe";
       let profile = pinnedProfile;
-      if (!profile) {
+      if (!profile && !usingExisting) {
         const version = targets.commonVersion;
         if (!version) throw new Error("No Safe version is shared by every network of this environment, so the address cannot be pinned.");
         const first = execPlans[0]!.chainId;
@@ -170,11 +179,29 @@ export function PreviewScreen() {
         profile = chosen.profile;
         saveProfile(profile, chosen.replaces);
       }
-      const different = execPlans.filter((p) => p.safeAddress !== profile!.safeAddress || p.safeVersion !== profile!.recipe!.safeVersion);
-      if (different.length) {
-        throw new Error(
-          `${different.map((p) => getChain(p.chainId).name).join(", ")} would use a different Safe address than the saved Safe. Deselect ${different.length > 1 ? "those networks" : "that network"} to continue.`,
-        );
+      if (profile?.recipe) {
+        const different = execPlans.filter((p) => p.safeAddress !== profile!.safeAddress || p.safeVersion !== profile!.recipe!.safeVersion);
+        if (different.length) {
+          throw new Error(
+            `${different.map((p) => getChain(p.chainId).name).join(", ")} would use a different Safe address than the saved Safe. Deselect ${different.length > 1 ? "those networks" : "that network"} to continue.`,
+          );
+        }
+      }
+      if (usingExisting && draft.destination?.kind === "existing_safe") {
+        const dest = draft.destination.address.toLowerCase();
+        const mismatch = execPlans.filter((p) => p.safeAddress?.toLowerCase() !== dest);
+        if (mismatch.length) throw new Error("One or more networks use a different destination address than the existing Safe you entered.");
+        if (!profile) {
+          const first = execPlans[0]!.chainId;
+          const insp = targets.targets[first]?.inspection;
+          const gov =
+            insp?.isSafe && insp.owners.length
+              ? buildSafeConfig(insp.owners, insp.threshold, "0")
+              : config;
+          const chosen = chooseImportedProfileForRun({ profiles, source, environment: draft.environment, safeAddress: draft.destination.address, config: gov });
+          profile = chosen.profile;
+          saveProfile(profile, chosen.replaces);
+        }
       }
       const expectedGovernance: Record<number, ExpectedGovernance> = {};
       for (const p of execPlans) {
@@ -188,8 +215,9 @@ export function PreviewScreen() {
         discovery,
         partialAcknowledged: partialAck,
         plannedAt: preflight!.plannedAt,
+        transferIntents: draft.transferIntents,
       });
-      setDraft((d) => ({ ...d, profileId: profile!.id }));
+      if (profile) setDraft((d) => ({ ...d, profileId: profile.id }));
       dispatch({
         type: "CREATE",
         migration: createMigration({
@@ -201,10 +229,14 @@ export function PreviewScreen() {
           ownerProofs,
           scope,
           plans,
-          profileId: profile.id,
-          deploymentCommitment: profile.commitment,
-          purpose: profile.runIds.length > 0 ? "sweep" : "migration",
+          profileId: profile?.id ?? null,
+          deploymentCommitment: profile?.commitment ?? null,
+          purpose: profile && profile.runIds.length > 0 ? "sweep" : "migration",
           expectedGovernance,
+          transferIntents: draft.transferIntents,
+          gasRetention: draft.gasRetention,
+          destination: draft.destination ?? { kind: "new_safe", config },
+          destinationKind: draft.destinationKind,
         }),
       });
       setStep("progress");
@@ -308,6 +340,16 @@ export function PreviewScreen() {
           </span>
         )}
       </Alert>
+
+      {source && fresh && preflight && (
+        <GasDeficitPanel
+          source={source}
+          environment={draft.environment}
+          rows={plans.map((p) => ({ chainId: p.chainId, plan: p, gasRetention: draft.gasRetention, quotedAt: preflight.plannedAt }))}
+          onRecheck={() => setRefresh((r) => r + 1)}
+          rechecking={loading}
+        />
+      )}
 
       {changedGovernance.map((t) => (
         <Alert key={t.chainId} variant="warning" title={`${getChain(t.chainId).name}: the Safe's governance changed since it was deployed`}>
