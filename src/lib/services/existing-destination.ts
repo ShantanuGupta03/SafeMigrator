@@ -1,5 +1,5 @@
 import type { Address, PublicClient } from "viem";
-import { getAddress } from "viem";
+import { getAddress, zeroAddress } from "viem";
 import { canonicalContractSet } from "./safe-deployment";
 import { classifyDeployed, snapshotFromInspection } from "./safe-profile";
 import { compareSafeToConfig, inspectSafe } from "./onchain-verification";
@@ -34,7 +34,7 @@ function unsupportedSettingsIssues(
 ): string[] {
   const issues: string[] = [];
   if (policy.blockIfModules && inspection.modules.length > 0) issues.push("Safe has enabled modules; not supported in this build.");
-  if (policy.blockIfCustomGuard && inspection.guard) issues.push("Safe has a transaction guard; review manually — migration blocked.");
+  if (policy.blockIfCustomGuard && inspection.guard && inspection.guard.toLowerCase() !== zeroAddress) issues.push("Safe has a transaction guard; review manually — migration blocked.");
   if (policy.blockIfNonCanonicalSingleton && inspection.singleton && inspection.singleton.toLowerCase() !== contracts.singleton.toLowerCase()) {
     issues.push("Safe uses a non-canonical singleton.");
   }
@@ -99,7 +99,7 @@ export async function resolveExistingSafeTarget(params: {
     status = "incompatible";
     issues.push(...securityNotes);
   }
-  if (params.referenceConfig && contracts && inspection.isSafe) {
+  if (securityNotes.length === 0 && params.referenceConfig && contracts && inspection.isSafe) {
     const g = classifyDeployed(inspection, params.referenceConfig, contracts);
     if (g.status === "deployed_governance_changed") {
       status = "deployed_governance_changed";
