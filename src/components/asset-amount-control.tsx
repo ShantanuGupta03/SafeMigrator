@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { formatAmount, toBigInt } from "@/lib/domain/amounts";
@@ -18,10 +18,7 @@ export function AssetAmountControl(props: {
   const balance = toBigInt(asset.balance);
   if (!selected || !isFungibleAmountEditable(asset.standard)) return null;
 
-  const remainingPreview = useMemo(() => {
-    if (intent.mode === "exact") return balance - toBigInt(intent.amount);
-    return 0n;
-  }, [intent, balance]);
+  const remainingPreview = intent.mode === "exact" ? balance - toBigInt(intent.amount) : 0n;
 
   const applyMax = () => onIntent(defaultMaxIntent(asset.balance));
 
