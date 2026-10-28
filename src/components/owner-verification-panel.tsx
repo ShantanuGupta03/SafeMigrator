@@ -78,6 +78,10 @@ export function OwnerVerificationPanel({ config, commonVersion, scopeChainIds, t
 
   const freeze = async () => {
     if (!config || !source) return;
+    if (draft.destination?.kind === "existing_safe") {
+      setMessage({ variant: "danger", text: "Existing-Safe owner verification needs a destination-bound acknowledgement. This setup flow only verifies newly created Safes." });
+      return;
+    }
     setMessage(null);
     if (!commonVersion) return setMessage({ variant: "danger", text: "No shared Safe version is available yet, so the configuration cannot be frozen." });
     setBusy("freeze");
@@ -154,6 +158,16 @@ export function OwnerVerificationPanel({ config, commonVersion, scopeChainIds, t
       setBusy(null);
     }
   };
+
+  if (draft.destination?.kind === "existing_safe") {
+    return (
+      <Alert variant="warning" title="Existing-Safe owner verification is not supported yet">
+        This verification flow signs a new Safe deployment recipe, not the existing destination you entered. Keep the Safe&apos;s actual onchain owners and threshold.
+        Changing the threshold here does not change the existing Safe and cannot establish control of it. Production migration requires a destination-bound owner
+        verification flow before it can proceed.
+      </Alert>
+    );
+  }
 
   if (!pinned) {
     return (
